@@ -1,0 +1,653 @@
+// Hiring Portal — data model
+//
+// Two audiences share one database:
+//   * internal users (ADMIN / RECRUITER) see everything
+//   * agency users (AGENCY_OWNER / AGENCY_RECRUITER) see only rows tied to their agency
+//
+// Two ideas carry most of the design:
+//   1. A Candidate is a person, deduplicated once globally. An Application is that person
+//      against one JobRole. Someone applying to three roles is one Candidate + three Applications.
+//   2. Stages are rows, not an enum, so the funnel can be renamed and reordered from the admin
+//      UI without a migration. Reporting keys off Stage.kind, which is stable.
+//
+// Emails are stored already-lowercased and phones already in E.164 by lib/normalize.ts, so
+// plain unique indexes do the deduplication work without needing the citext extension.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+// Connection URL lives in prisma.config.ts (Prisma 7 moved it out of the schema).
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Identity and tenancy
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN // full access, including user/agency management and settings
+  RECRUITER // full candidate access, no settings or user management
+  AGENCY_OWNER // agency side; can manage their own agency's recruiters
+  AGENCY_RECRUITER // agency side; can submit and view their own agency's candidates
+}
+
+enum AgencyStatus {
+  ACTIVE
+  PAUSED
+}
+
+model Agency {
+  id            String       @id @default(uuid()) @db.Uuid
+  name          String
+  slug          String       @unique
+  contactEmail  String?
+  contactPhone  String?
+  status        AgencyStatus @default(ACTIVE)
+  /// Days after a submission during which this agency is credited with the candidate.
+  /// Industry norm is 30/60/90/180; disputes are settled against DuplicateSubmission rows.
+  ownershipWindowDays Int     @default(90)
+  commissionNotes String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  users                User[]
+  jobAssignments       AgencyJobAssignment[]
+  applications         Application[]
+  attemptedDuplicates  DuplicateSubmission[] @relation("AttemptingAgency")
+  blockingDuplicates   DuplicateSubmission[] @relation("OwningAgency")
+
+  @@index([status])
+  @@map("agencies")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  passwordHash String?
+  name         String
+  phone        String?
+  role         UserRole
+  /// Null for internal users, required for agency users. Enforced by a check constraint
+  /// added in the migration — see prisma/migrations.
+  agencyId     String?   @db.Uuid
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  agency Agency? @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  sessions            Session[]
+  invitations         Invitation[]
+  createdJobRoles     JobRole[]             @relation("JobRoleCreatedBy")
+  assignedAgencies    AgencyJobAssignment[] @relation("AssignmentAssignedBy")
+  submittedApps       Application[]         @relation("ApplicationSubmittedBy")
+  ownedApps           Application[]         @relation("ApplicationOwner")
+  stageTransitions    StageTransition[]
+  notes               Note[]
+  interviewsCreated   Interview[]
+  activity            ActivityLog[]
+  uploadedFiles       StoredFile[]
+  duplicateAttempts   DuplicateSubmission[]
+
+  @@index([agencyId])
+  @@index([role])
+  @@map("users")
+}
+
+/// Database-backed sessions: deleting a row logs the user out immediately, which matters
+/// when you need to cut an agency off mid-day.
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// SHA-256 of the cookie value. The raw token never touches the database.
+  tokenHash String   @unique
+  userId    String   @db.Uuid
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  ip        String?
+  userAgent String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+enum InvitationType {
+  INVITE
+  PASSWORD_RESET
+}
+
+/// Invite and reset links. Only the hash is stored; the raw token exists solely in the email.
+model Invitation {
+  id        String         @id @default(uuid()) @db.Uuid
+  userId    String         @db.Uuid
+  tokenHash String         @unique
+  type      InvitationType
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("invitations")
+}
+
+// ---------------------------------------------------------------------------
+// Roles being hired for
+// ---------------------------------------------------------------------------
+
+enum JobRoleStatus {
+  DRAFT
+  OPEN
+  PAUSED
+  CLOSED
+}
+
+model JobRole {
+  id                  String        @id @default(uuid()) @db.Uuid
+  title               String
+  department          String?
+  location            String?
+  employmentType      String?
+  description         String?
+  openings            Int           @default(1)
+  minExperienceMonths Int?
+  /// Internal budget ceiling in whole currency units. Never serialised to the agency side.
+  maxBudgetCtc        Int?
+  status              JobRoleStatus @default(DRAFT)
+  createdByUserId     String?       @db.Uuid
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  createdBy User? @relation("JobRoleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  questions     ScreeningQuestion[]
+  assignments   AgencyJobAssignment[]
+  applications  Application[]
+  duplicates    DuplicateSubmission[]
+  sheetSources  SheetSource[]
+
+  @@index([status])
+  @@map("job_roles")
+}
+
+/// The grant that makes the agency side work: an agency can only see and submit to the
+/// roles listed here. Revoking access is one boolean.
+model AgencyJobAssignment {
+  id               String   @id @default(uuid()) @db.Uuid
+  agencyId         String   @db.Uuid
+  jobRoleId        String   @db.Uuid
+  /// Optional cap on how many candidates this agency may submit for this role.
+  submissionLimit  Int?
+  isActive         Boolean  @default(true)
+  assignedByUserId String?  @db.Uuid
+  assignedAt       DateTime @default(now())
+
+  agency     Agency  @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  jobRole    JobRole @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  assignedBy User?   @relation("AssignmentAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([agencyId, jobRoleId])
+  @@index([jobRoleId])
+  @@map("agency_job_assignments")
+}
+
+enum QuestionType {
+  TEXT
+  LONG_TEXT
+  NUMBER
+  CURRENCY
+  BOOLEAN
+  SINGLE_SELECT
+  MULTI_SELECT
+  DATE
+}
+
+/// Qualifying questions you define per role. Every agency answers the same set for a given
+/// role, which is what makes submissions comparable.
+model ScreeningQuestion {
+  id         String       @id @default(uuid()) @db.Uuid
+  jobRoleId  String       @db.Uuid
+  label      String
+  helpText   String?
+  type       QuestionType
+  /// Choice list for SINGLE_SELECT / MULTI_SELECT.
+  options    Json?
+  isRequired Boolean      @default(false)
+  sortOrder  Int          @default(0)
+  /// When true, knockoutRule is evaluated on submit and failures are flagged (never
+  /// auto-rejected — the call stays yours).
+  isKnockout Boolean      @default(false)
+  /// e.g. { "op": "lte", "value": 30 } for a notice-period ceiling.
+  knockoutRule Json?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  jobRole JobRole             @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  answers ApplicationAnswer[]
+
+  @@index([jobRoleId, sortOrder])
+  @@map("screening_questions")
+}
+
+// ---------------------------------------------------------------------------
+// People and applications
+// ---------------------------------------------------------------------------
+
+/// The human being. One row per person across every role they ever apply to.
+model Candidate {
+  id                    String    @id @default(uuid()) @db.Uuid
+  fullName              String
+  /// Lowercased by lib/normalize.ts before write.
+  email                 String?   @unique
+  /// E.164 (e.g. +919876543210) by lib/normalize.ts before write.
+  phoneE164             String?   @unique
+  currentCompany        String?
+  currentTitle          String?
+  totalExperienceMonths Int?
+  currentLocation       String?
+  linkedinUrl           String?
+  firstSeenAt           DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  applications Application[]
+  duplicates   DuplicateSubmission[]
+  importedRows ImportedRow[]
+
+  @@index([fullName])
+  @@map("candidates")
+}
+
+enum ApplicationSource {
+  AGENCY
+  WEBSITE
+  DIRECT
+  REFERRAL
+}
+
+/// One candidate against one role. The unique constraint on (candidateId, jobRoleId) is the
+/// anti-duplicate mechanism: a second agency physically cannot open a competing application
+/// for the same person and role. The attempt is logged to DuplicateSubmission instead.
+model Application {
+  id                String            @id @default(uuid()) @db.Uuid
+  candidateId       String            @db.Uuid
+  jobRoleId         String            @db.Uuid
+  source            ApplicationSource
+  agencyId          String?           @db.Uuid
+  submittedByUserId String?           @db.Uuid
+
+  currentStageId  String   @db.Uuid
+  stageEnteredAt  DateTime @default(now())
+
+  resumeFileId    String?  @db.Uuid
+  /// The agency's own pitch/context for this candidate.
+  agencyNotes     String?
+  /// Whole currency units (e.g. rupees), not minor units — annual CTC figures overflow
+  /// a 32-bit int when stored as paise.
+  currentCtc      Int?
+  expectedCtc     Int?
+  noticePeriodDays Int?
+  /// Question IDs whose knockout rule this submission failed.
+  knockoutFlags   Json?
+
+  ownerUserId        String?   @db.Uuid
+  /// submittedAt + agency.ownershipWindowDays. Null for non-agency sources.
+  ownershipExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  candidate    Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobRole      JobRole     @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  agency       Agency?     @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  submittedBy  User?       @relation("ApplicationSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  owner        User?       @relation("ApplicationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  currentStage Stage       @relation(fields: [currentStageId], references: [id])
+  resumeFile   StoredFile? @relation(fields: [resumeFileId], references: [id], onDelete: SetNull)
+
+  answers      ApplicationAnswer[]
+  transitions  StageTransition[]
+  interviews   Interview[]
+  notes        Note[]
+  duplicates   DuplicateSubmission[]
+  importedRows ImportedRow[]
+
+  @@unique([candidateId, jobRoleId])
+  @@index([jobRoleId, currentStageId])
+  @@index([agencyId, createdAt(sort: Desc)])
+  @@index([currentStageId, stageEnteredAt])
+  @@index([source])
+  @@map("applications")
+}
+
+/// Answers stored in typed columns rather than one JSON blob, so "notice period <= 30 and
+/// expected CTC under X" stays an indexed SQL query instead of a full scan.
+model ApplicationAnswer {
+  id            String    @id @default(uuid()) @db.Uuid
+  applicationId String    @db.Uuid
+  questionId    String    @db.Uuid
+  valueText     String?
+  valueNumber   Int?
+  valueBool     Boolean?
+  valueDate     DateTime?
+  valueJson     Json?
+
+  application Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  question    ScreeningQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, questionId])
+  @@index([questionId, valueNumber])
+  @@map("application_answers")
+}
+
+/// Evidence log for ownership disputes: who tried to submit an already-owned candidate, when,
+/// and who held them at the time.
+model DuplicateSubmission {
+  id                   String   @id @default(uuid()) @db.Uuid
+  candidateId          String   @db.Uuid
+  jobRoleId            String   @db.Uuid
+  attemptedByAgencyId  String?  @db.Uuid
+  attemptedByUserId    String?  @db.Uuid
+  existingApplicationId String? @db.Uuid
+  existingAgencyId     String?  @db.Uuid
+  attemptedAt          DateTime @default(now())
+  resolution           String?
+
+  candidate           Candidate    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobRole             JobRole      @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  attemptedByAgency   Agency?      @relation("AttemptingAgency", fields: [attemptedByAgencyId], references: [id], onDelete: SetNull)
+  existingAgency      Agency?      @relation("OwningAgency", fields: [existingAgencyId], references: [id], onDelete: SetNull)
+  attemptedByUser     User?        @relation(fields: [attemptedByUserId], references: [id], onDelete: SetNull)
+  existingApplication Application? @relation(fields: [existingApplicationId], references: [id], onDelete: SetNull)
+
+  @@index([attemptedByAgencyId, attemptedAt(sort: Desc)])
+  @@index([candidateId])
+  @@map("duplicate_submissions")
+}
+
+// ---------------------------------------------------------------------------
+// The funnel
+// ---------------------------------------------------------------------------
+
+enum StageKind {
+  ACTIVE // still in play; shows as a column on the board
+  WON // hired / accepted
+  LOST // out, for any reason
+  HOLD // parked but revivable (e.g. notice period too long right now)
+}
+
+/// Funnel stages live in the database so they can be renamed and reordered from the admin UI.
+/// Code branches on `kind`, never on a stage name.
+model Stage {
+  id              String    @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String    @unique
+  sortOrder       Int
+  kind            StageKind @default(ACTIVE)
+  /// Whether agencies see this stage name for their own candidates.
+  visibleToAgency Boolean   @default(true)
+  color           String    @default("#64748b")
+  /// The stage every new application enters.
+  isDefault       Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  applications    Application[]
+  transitionsFrom StageTransition[] @relation("TransitionFrom")
+  transitionsTo   StageTransition[] @relation("TransitionTo")
+
+  @@index([sortOrder])
+  @@map("stages")
+}
+
+/// Append-only history. Application.currentStageId is a cache of the newest row here, kept in
+/// sync inside the same transaction so the board query never has to aggregate.
+model StageTransition {
+  id              String   @id @default(uuid()) @db.Uuid
+  applicationId   String   @db.Uuid
+  fromStageId     String?  @db.Uuid
+  toStageId       String   @db.Uuid
+  changedByUserId String?  @db.Uuid
+  reasonCode      String?
+  note            String?
+  createdAt       DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStage   Stage?      @relation("TransitionFrom", fields: [fromStageId], references: [id])
+  toStage     Stage       @relation("TransitionTo", fields: [toStageId], references: [id])
+  changedBy   User?       @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([applicationId, createdAt(sort: Desc)])
+  @@map("stage_transitions")
+}
+
+enum InterviewRound {
+  TELE
+  R1
+  R2
+  R3
+}
+
+enum InterviewMode {
+  PHONE
+  VIDEO
+  ONSITE
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+}
+
+enum InterviewOutcome {
+  PASS
+  FAIL
+  HOLD
+}
+
+model Interview {
+  id              String            @id @default(uuid()) @db.Uuid
+  applicationId   String            @db.Uuid
+  round           InterviewRound
+  scheduledAt     DateTime
+  durationMinutes Int               @default(45)
+  mode            InterviewMode     @default(VIDEO)
+  locationOrLink  String?
+  interviewerNames String[]
+  status          InterviewStatus   @default(SCHEDULED)
+  outcome         InterviewOutcome?
+  rating          Int?
+  feedback        String?
+  createdByUserId String?           @db.Uuid
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+  @@index([scheduledAt])
+  @@map("interviews")
+}
+
+enum NoteVisibility {
+  INTERNAL
+  SHARED_WITH_AGENCY
+}
+
+/// Notes default to INTERNAL. Publishing feedback to an agency is a deliberate act, so a
+/// private comment can never leak by accident.
+model Note {
+  id            String         @id @default(uuid()) @db.Uuid
+  applicationId String         @db.Uuid
+  authorUserId  String?        @db.Uuid
+  body          String
+  visibility    NoteVisibility @default(INTERNAL)
+  createdAt     DateTime       @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  author      User?       @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([applicationId, createdAt(sort: Desc)])
+  @@map("notes")
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  entityType  String
+  entityId    String?
+  action      String
+  meta        Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt(sort: Desc)])
+  @@map("activity_log")
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/// Resume metadata. Bytes live in S3-compatible storage and are only ever reachable through
+/// /api/files/[id], which authorises the request and then redirects to a short-lived signed URL.
+model StoredFile {
+  id               String   @id @default(uuid()) @db.Uuid
+  storageKey       String   @unique
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
+  uploadedByUserId String?  @db.Uuid
+  checksumSha256   String?
+  createdAt        DateTime @default(now())
+
+  uploadedBy   User?         @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  applications Application[]
+
+  @@map("files")
+}
+
+// ---------------------------------------------------------------------------
+// Google Sheets ingestion
+// ---------------------------------------------------------------------------
+
+model SheetSource {
+  id                String    @id @default(uuid()) @db.Uuid
+  name              String
+  spreadsheetId     String
+  sheetName         String    @default("Sheet1")
+  headerRow         Int       @default(1)
+  /// { "Full Name": "fullName", "Email": "email", ... } — sheet header to portal field.
+  columnMapping     Json
+  defaultJobRoleId  String?   @db.Uuid
+  /// Optional header whose cell value names the role, overriding defaultJobRoleId.
+  roleColumn        String?
+  lastSyncedAt      DateTime?
+  lastRowCursor     Int       @default(0)
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  defaultJobRole JobRole?        @relation(fields: [defaultJobRoleId], references: [id], onDelete: SetNull)
+  importedRows   ImportedRow[]
+  syncRuns       SheetSyncRun[]
+
+  @@unique([spreadsheetId, sheetName])
+  @@map("sheet_sources")
+}
+
+enum ImportStatus {
+  IMPORTED
+  DUPLICATE
+  ERROR
+  NEEDS_REVIEW
+}
+
+/// Idempotency ledger. The unique rowHash is what lets the Apps Script webhook and the cron
+/// pull run against the same rows without ever creating a candidate twice.
+model ImportedRow {
+  id            String       @id @default(uuid()) @db.Uuid
+  sheetSourceId String       @db.Uuid
+  rowHash       String       @unique
+  sheetRowNumber Int?
+  raw           Json
+  candidateId   String?      @db.Uuid
+  applicationId String?      @db.Uuid
+  status        ImportStatus
+  error         String?
+  importedAt    DateTime     @default(now())
+
+  sheetSource SheetSource  @relation(fields: [sheetSourceId], references: [id], onDelete: Cascade)
+  candidate   Candidate?   @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([sheetSourceId, importedAt(sort: Desc)])
+  @@index([status])
+  @@map("imported_rows")
+}
+
+enum SyncTrigger {
+  WEBHOOK
+  CRON
+  MANUAL
+}
+
+model SheetSyncRun {
+  id             String      @id @default(uuid()) @db.Uuid
+  sheetSourceId  String      @db.Uuid
+  trigger        SyncTrigger
+  startedAt      DateTime    @default(now())
+  finishedAt     DateTime?
+  rowsRead       Int         @default(0)
+  createdCount   Int         @default(0)
+  duplicateCount Int         @default(0)
+  errorCount     Int         @default(0)
+  errors         Json?
+
+  sheetSource SheetSource @relation(fields: [sheetSourceId], references: [id], onDelete: Cascade)
+
+  @@index([sheetSourceId, startedAt(sort: Desc)])
+  @@map("sheet_sync_runs")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// Every outbound email is recorded, so "did the agency actually get told?" is answerable.
+model EmailLog {
+  id                String      @id @default(uuid()) @db.Uuid
+  toEmail           String
+  template          String
+  payload           Json?
+  status            EmailStatus @default(QUEUED)
+  providerMessageId String?
+  error             String?
+  sentAt            DateTime?
+  createdAt         DateTime    @default(now())
+
+  @@index([toEmail, createdAt(sort: Desc)])
+  @@map("email_log")
+}
