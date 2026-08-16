@@ -162,21 +162,86 @@ npm run db:demo
 
 ## Deploying
 
-Built for Vercel + a managed Postgres, but it's a standard Next.js app and runs anywhere.
+Built for Vercel plus a managed Postgres, but it's a standard Next.js app and runs anywhere.
 
-1. Create a Postgres database (Neon or Supabase free tier is plenty).
-2. Import the repo into Vercel.
-3. Set the environment variables from `.env.example`. `APP_URL` must be your real domain or
-   invite links will point at localhost.
-4. Deploy. The build runs `prisma generate`; run `npm run db:deploy` once against production
-   to create the schema, then `npm run db:seed` for the stages and your admin account.
-5. `vercel.json` already registers the 10-minute cron for the Sheets pull.
+The build is designed to succeed **before** anything is configured — it generates the Prisma
+client, skips migrations when no database is set, and compiles. That ordering matters: you need
+a deployed project in order to attach a database to it.
+
+### 1. Create the database
+
+Neon's free tier is the quickest. Create a project and copy **both** connection strings from the
+dashboard:
+
+- the **pooled** one (host contains `-pooler`) → `DATABASE_URL`
+- the **direct** one → `DIRECT_DATABASE_URL`
+
+Serverless functions each open their own connections, so the app must go through the pooler.
+Migrations must not: DDL over a transaction pooler fails on advisory locks. Supabase is the same
+idea — Supavisor on port 6543 for the app, port 5432 direct for migrations. With a single
+non-pooled database, set `DATABASE_URL` only and leave `DIRECT_DATABASE_URL` empty.
+
+### 2. Import the repo into Vercel
+
+Framework detection and build settings need no changes.
+
+### 3. Set the environment variables
+
+**Required — the app returns an error on every request without these:**
+
+| Variable | Notes |
+|---|---|
+| `DATABASE_URL` | Pooled connection string |
+| `SESSION_SECRET` | 32+ random characters — `openssl rand -base64 48`. Changing it signs everyone out |
+| `APP_URL` | Your real domain. Invite links point here, so localhost means broken invites |
+
+**Recommended:**
+
+| Variable | Notes |
+|---|---|
+| `DIRECT_DATABASE_URL` | Direct connection string, used only by migrations |
+| `CRON_SECRET` | `openssl rand -hex 32`. Without it the sync endpoint rejects Vercel's cron |
+| `SHEETS_WEBHOOK_SECRET` | `openssl rand -hex 32`. Needed for the Apps Script push |
+
+**Optional — each switches on a feature, and the UI says so when one is missing:**
+`S3_*` (resume uploads), `RESEND_API_KEY` (invite and notification emails),
+`GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` (importing website leads).
+
+### 4. Deploy
+
+Each build runs `prisma generate`, then `prisma migrate deploy` **if** a database is configured,
+then `next build`. So a schema change reaches production by pushing — no terminal step. Before
+you've set `DATABASE_URL` the migration is skipped with a log line rather than failing the build.
+
+### 5. Seed the first admin
+
+One manual step, once, to create the funnel stages and your login:
+
+```bash
+DATABASE_URL="<direct connection string>" \
+SEED_ADMIN_EMAIL="you@yourcompany.com" \
+SEED_ADMIN_PASSWORD="<a strong password>" \
+npm run db:seed
+```
+
+Then sign in at your domain. `vercel.json` already registers the 10-minute Sheets sync;
+schedules more frequent than daily need a Vercel Pro account.
 
 **Resume storage** is any S3-compatible bucket. Keep it **private** — the app hands out
-60-second signed URLs through `/api/files/[id]`, which authorises every request. Add a CORS
-rule allowing `PUT` from your domain so browser uploads work.
+60-second signed URLs through `/api/files/[id]`, which authorises every request. Add a CORS rule
+allowing `PUT` from your domain so browser uploads work.
 
 Running cost at typical volume: roughly $0–25/month.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `PrismaConfigEnvError: Cannot resolve environment variable` | An older checkout. `prisma.config.ts` must read `process.env` and omit `datasource` when unset |
+| Build dies at "Collecting page data" | Something reads env at module scope. The Prisma client in `src/lib/db.ts` is deliberately lazy for this reason |
+| `Invalid environment configuration` on first request | A required variable is missing. The message names it |
+| `Hobby accounts are limited to daily cron jobs` | Either move to Pro or set `vercel.json` to a daily schedule |
+| Connection limit errors under load | `DATABASE_URL` is the direct string; switch it to the pooled one |
 
 ## Connecting your Google Sheet
 

@@ -36,6 +36,21 @@ function check(label: string, condition: boolean, detail?: unknown) {
 
 const TAG = `verify-${Date.now()}`;
 
+/**
+ * Every identifier this script touches is namespaced to the run.
+ *
+ * An earlier version reused plausible addresses like rahul.sharma@example.com, which collide
+ * with the demo data from `npm run db:demo`: the dedupe test then matched a demo candidate,
+ * and the cleanup deleted them. Namespacing keeps the run hermetic in both directions.
+ */
+const EMAIL_MAIN = `${TAG}-rahul@example.com`;
+const EMAIL_FLAGGED = `${TAG}-priya@example.com`;
+const EMAIL_NO_ANSWER = `${TAG}-noanswer@example.com`;
+const EMAIL_CAP = `${TAG}-vikram@example.com`;
+/** A 10-digit number derived from the clock, so concurrent or repeat runs don't collide. */
+const PHONE_LOCAL = `9${String(Date.now()).slice(-9)}`;
+const PHONE_E164 = `+91${PHONE_LOCAL}`;
+
 async function main() {
   console.log("\nHiring Portal — end-to-end verification\n");
 
@@ -125,8 +140,8 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyA.id,
     fullName: "Rahul Sharma",
-    email: "Rahul.Sharma@Example.com",
-    phone: "098765 43210",
+    email: EMAIL_MAIN.toUpperCase(),
+    phone: `0${PHONE_LOCAL}`,
     expectedCtc: "18 LPA",
     noticePeriod: "30 days",
     answers: { [noticeQuestion.id]: "30", [relocateQuestion.id]: "yes" },
@@ -146,12 +161,12 @@ async function main() {
   check("notice period stored as 30 days", created?.noticePeriodDays === 30, created?.noticePeriodDays);
   check(
     "email normalised to lowercase",
-    created?.candidate.email === "rahul.sharma@example.com",
+    created?.candidate.email === EMAIL_MAIN,
     created?.candidate.email,
   );
   check(
     "phone normalised to E.164",
-    created?.candidate.phoneE164 === "+919876543210",
+    created?.candidate.phoneE164 === PHONE_E164,
     created?.candidate.phoneE164,
   );
   check("lands in the entry stage", created?.currentStage.slug === "received", created?.currentStage.slug);
@@ -170,7 +185,7 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyA.id,
     fullName: "Priya Nair",
-    email: "priya@example.com",
+    email: EMAIL_FLAGGED,
     noticePeriod: "90 days",
     answers: { [noticeQuestion.id]: "90" },
   });
@@ -185,7 +200,7 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyA.id,
     fullName: "No Answer",
-    email: "noanswer@example.com",
+    email: EMAIL_NO_ANSWER,
     answers: {},
   });
   check(
@@ -216,8 +231,8 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyB.id,
     fullName: "Rahul Sharma",
-    email: "RAHUL.SHARMA@example.com",
-    phone: "+91 98765 43210",
+    email: EMAIL_MAIN.toUpperCase(),
+    phone: `+91 ${PHONE_LOCAL}`,
     answers: { [noticeQuestion.id]: "15" },
   });
 
@@ -239,7 +254,7 @@ async function main() {
   );
 
   const candidateCount = await prisma.candidate.count({
-    where: { email: "rahul.sharma@example.com" },
+    where: { email: EMAIL_MAIN },
   });
   check("the person exists exactly once, not twice", candidateCount === 1, candidateCount);
 
@@ -256,7 +271,7 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyB.id,
     fullName: "Rahul Sharma",
-    email: "rahul.sharma@example.com",
+    email: EMAIL_MAIN,
   });
   check(
     "the same person CAN be submitted for a different role",
@@ -265,7 +280,7 @@ async function main() {
   );
   check(
     "and is still one candidate record",
-    (await prisma.candidate.count({ where: { email: "rahul.sharma@example.com" } })) === 1,
+    (await prisma.candidate.count({ where: { email: EMAIL_MAIN } })) === 1,
   );
 
   // --- 4. Submission limits ---------------------------------------------
@@ -284,7 +299,7 @@ async function main() {
     source: "AGENCY",
     agencyId: agencyB.id,
     fullName: "Vikram Rao",
-    email: "vikram@example.com",
+    email: EMAIL_CAP,
     answers: { [noticeQuestion.id]: "20" },
   });
 
@@ -426,13 +441,7 @@ async function main() {
   // --- Cleanup ----------------------------------------------------------
   console.log("\nCleaning up…");
 
-  await prisma.candidate.deleteMany({
-    where: {
-      email: {
-        in: ["rahul.sharma@example.com", "priya@example.com", "vikram@example.com"],
-      },
-    },
-  });
+  await prisma.candidate.deleteMany({ where: { email: { startsWith: TAG } } });
   await prisma.jobRole.deleteMany({ where: { title: { startsWith: TAG } } });
   await prisma.agency.deleteMany({ where: { slug: { startsWith: TAG } } });
   await prisma.user.deleteMany({ where: { email: { startsWith: TAG } } });
