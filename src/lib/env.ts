@@ -4,8 +4,8 @@ import { z } from "zod";
  * Environment contract. Anything required for the app to boot is validated here so a
  * misconfigured deploy fails loudly at startup instead of at 2am on a resume download.
  *
- * Optional groups (storage, email, sheets) degrade gracefully: the features that need them
- * report a clear "not configured" error rather than crashing the whole app.
+ * Optional groups (storage, email, the careers API) degrade gracefully: the features that need
+ * them report a clear "not configured" error rather than crashing the whole app.
  */
 const schema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
@@ -18,7 +18,7 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().default("Hiring Portal <onboarding@resend.dev>"),
 
-  // Google service account — powers both Sheets ingestion and Drive resume storage.
+  // Google service account — signs the requests that store and read resumes in Drive.
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
   GOOGLE_PRIVATE_KEY: z.string().optional(),
 
@@ -27,9 +27,10 @@ const schema = z.object({
   /// fails with 403 storageQuotaExceeded.
   GOOGLE_DRIVE_FOLDER_ID: z.string().optional(),
 
-  // Shared secrets for machine-to-machine routes
-  SHEETS_WEBHOOK_SECRET: z.string().optional(),
-  CRON_SECRET: z.string().optional(),
+  /// Shared secret your careers site sends as X-API-Key when it posts an application.
+  /// Without it every /api/public route refuses, so the endpoints are closed by default
+  /// rather than open until someone remembers to protect them.
+  CAREERS_API_KEY: z.string().optional(),
 
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -54,7 +55,7 @@ export function env() {
   return cached;
 }
 
-/** Service account credentials are present — the prerequisite for both Sheets and Drive. */
+/** Service account credentials are present — the prerequisite for Drive. */
 export function isGoogleConfigured() {
   const e = env();
   return Boolean(e.GOOGLE_SERVICE_ACCOUNT_EMAIL && e.GOOGLE_PRIVATE_KEY);
@@ -69,6 +70,7 @@ export function isEmailConfigured() {
   return Boolean(env().RESEND_API_KEY);
 }
 
-export function isSheetsConfigured() {
-  return isGoogleConfigured();
+/** The careers site can post applications only once a key exists to authenticate it. */
+export function isCareersApiConfigured() {
+  return Boolean(env().CAREERS_API_KEY);
 }

@@ -172,7 +172,6 @@ model JobRole {
   assignments   AgencyJobAssignment[]
   applications  Application[]
   duplicates    DuplicateSubmission[]
-  sheetSources  SheetSource[]
 
   @@index([status])
   @@map("job_roles")
@@ -260,7 +259,6 @@ model Candidate {
 
   applications Application[]
   duplicates   DuplicateSubmission[]
-  importedRows ImportedRow[]
 
   @@index([fullName])
   @@map("candidates")
@@ -318,7 +316,6 @@ model Application {
   interviews   Interview[]
   notes        Note[]
   duplicates   DuplicateSubmission[]
-  importedRows ImportedRow[]
 
   @@unique([candidateId, jobRoleId])
   @@index([jobRoleId, currentStageId])
@@ -565,89 +562,6 @@ model StoredFile {
   applications Application[]
 
   @@map("files")
-}
-
-// ---------------------------------------------------------------------------
-// Google Sheets ingestion
-// ---------------------------------------------------------------------------
-
-model SheetSource {
-  id                String    @id @default(uuid()) @db.Uuid
-  name              String
-  spreadsheetId     String
-  sheetName         String    @default("Sheet1")
-  headerRow         Int       @default(1)
-  /// { "Full Name": "fullName", "Email": "email", ... } — sheet header to portal field.
-  columnMapping     Json
-  defaultJobRoleId  String?   @db.Uuid
-  /// Optional header whose cell value names the role, overriding defaultJobRoleId.
-  roleColumn        String?
-  lastSyncedAt      DateTime?
-  lastRowCursor     Int       @default(0)
-  isActive          Boolean   @default(true)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-
-  defaultJobRole JobRole?        @relation(fields: [defaultJobRoleId], references: [id], onDelete: SetNull)
-  importedRows   ImportedRow[]
-  syncRuns       SheetSyncRun[]
-
-  @@unique([spreadsheetId, sheetName])
-  @@map("sheet_sources")
-}
-
-enum ImportStatus {
-  IMPORTED
-  DUPLICATE
-  ERROR
-  NEEDS_REVIEW
-}
-
-/// Idempotency ledger. The unique rowHash is what lets the Apps Script webhook and the cron
-/// pull run against the same rows without ever creating a candidate twice.
-model ImportedRow {
-  id            String       @id @default(uuid()) @db.Uuid
-  sheetSourceId String       @db.Uuid
-  rowHash       String       @unique
-  sheetRowNumber Int?
-  raw           Json
-  candidateId   String?      @db.Uuid
-  applicationId String?      @db.Uuid
-  status        ImportStatus
-  error         String?
-  importedAt    DateTime     @default(now())
-
-  sheetSource SheetSource  @relation(fields: [sheetSourceId], references: [id], onDelete: Cascade)
-  candidate   Candidate?   @relation(fields: [candidateId], references: [id], onDelete: SetNull)
-  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
-
-  @@index([sheetSourceId, importedAt(sort: Desc)])
-  @@index([status])
-  @@map("imported_rows")
-}
-
-enum SyncTrigger {
-  WEBHOOK
-  CRON
-  MANUAL
-}
-
-model SheetSyncRun {
-  id             String      @id @default(uuid()) @db.Uuid
-  sheetSourceId  String      @db.Uuid
-  trigger        SyncTrigger
-  startedAt      DateTime    @default(now())
-  finishedAt     DateTime?
-  rowsRead       Int         @default(0)
-  createdCount   Int         @default(0)
-  duplicateCount Int         @default(0)
-  errorCount     Int         @default(0)
-  errors         Json?
-
-  sheetSource SheetSource @relation(fields: [sheetSourceId], references: [id], onDelete: Cascade)
-
-  @@index([sheetSourceId, startedAt(sort: Desc)])
-  @@map("sheet_sync_runs")
 }
 
 // ---------------------------------------------------------------------------

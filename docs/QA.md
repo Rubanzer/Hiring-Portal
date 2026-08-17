@@ -120,19 +120,31 @@ Integrations** should read *Configured* before you start.
 - [ ] Move a candidate with *Email the agency* ticked → an `email_log` row is written (SENT, or
       SKIPPED when email isn't configured).
 
-## 9. Google Sheets
+## 9. Careers site API
 
-- [ ] **Settings → Google Sheets** warns clearly when credentials are missing.
-- [ ] Pasting a full spreadsheet URL works as well as a bare ID.
-- [ ] *Read columns from the sheet* shows your real headers and five sample rows.
-- [ ] An unshared sheet gives a message telling you to share it with the service account.
-- [ ] Saving without mapping **Full name** is refused.
-- [ ] *Import now* creates candidates with `source = WEBSITE`.
-- [ ] **Run the import twice — the second run creates nothing.** (Idempotency.)
-- [ ] A row with no name lands in *Rows needing review* with the reason, not silently dropped.
-- [ ] A website lead who an agency later submits is blocked as a duplicate.
-- [ ] `curl` the cron route without the secret → 401; with it → a JSON summary.
-- [ ] With the Apps Script installed, adding a row makes the candidate appear within seconds.
+Needs `CAREERS_API_KEY` set on the deployment. Run these from a terminal with `curl`, or from
+your careers site once it's wired up. `$P` is your portal URL, `$K` the key.
+
+- [ ] `curl $P/api/public/roles` with **no** key → **401**.
+- [ ] With the key → only roles you've set to **Open**. Set one to Paused and re-run: it
+      disappears.
+- [ ] The response contains no `knockoutRule`, no `isKnockout` and no `maxBudgetCtc`. **An
+      applicant must not be able to read your screening thresholds.**
+- [ ] Post an application → **201** `{"status":"received"}`, and the candidate appears in
+      `/review` with source *Website*.
+- [ ] Post the **identical** application again → the same status code and the same body. It must
+      be impossible to tell a duplicate from a first submission.
+- [ ] But only one application exists in the funnel, and Settings → Recent activity (or the
+      candidate's page) shows the duplicate attempt was recorded.
+- [ ] Apply to a Paused role's id → **404**.
+- [ ] A submission with neither email nor phone → **400** with a readable reason.
+- [ ] Upload a resume through `/api/public/uploads` → PUT → `/uploads/complete`, then submit with
+      that `fileId` → the resume renders inline on the candidate page.
+- [ ] Submit with a `fileId` you never confirmed → **400** telling you to call complete first.
+- [ ] Hammer `/api/public/applications` more than 20 times in an hour from one address → **429**
+      with a `Retry-After` header.
+- [ ] Unset `CAREERS_API_KEY` and redeploy → every `/api/public` route returns **503**, and
+      Settings → Integrations shows *Careers site API — Not configured*.
 
 ## 10. Stage editor
 
@@ -167,10 +179,11 @@ Integrations** should read *Configured* before you start.
 
 - [ ] `SESSION_SECRET` is a fresh random value, not the example.
 - [ ] `APP_URL` is the real domain (otherwise invite links point at localhost).
-- [ ] The seeded admin password has been changed.
 - [ ] The resume folder is in a **Shared Drive**, and its membership is limited to people who
       should see candidate personal data.
-- [ ] `CRON_SECRET` and `SHEETS_WEBHOOK_SECRET` are set to random values.
+- [ ] `CAREERS_API_KEY` is a fresh random value, and lives only in your careers site's
+      **server-side** environment — never in client-side code or a public page.
+- [ ] `SEED_ADMIN_PASSWORD` has been deleted from the environment variables after first login.
 - [ ] Database backups are enabled.
-- [ ] A copy of your real leads sheet has been imported into a preview deployment, and the
-      column mapping and dedupe behaved correctly on messy real rows.
+- [ ] A real application has been submitted end-to-end from the live careers page, with a
+      resume, and landed in the funnel.

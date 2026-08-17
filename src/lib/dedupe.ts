@@ -26,7 +26,7 @@ export type CandidateInput = CandidateIdentity & {
   linkedinUrl?: string | null;
 };
 
-/** Normalises whatever the form or the spreadsheet supplied into a comparable identity. */
+/** Normalises whatever the agency form or the careers page supplied into a comparable identity. */
 export function toIdentity(input: {
   fullName: string;
   email?: string | null;

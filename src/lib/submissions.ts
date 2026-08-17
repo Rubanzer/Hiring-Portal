@@ -12,11 +12,11 @@ import { blankToNull, parseCurrency, parseNoticePeriodDays } from "./normalize";
 import type { ApplicationSource } from "@/generated/prisma/enums";
 
 /**
- * One code path for creating an application, whether it came from an agency form or a row in
- * the leads spreadsheet.
+ * One code path for creating an application, whether an agency filled in the portal form or
+ * someone applied on your careers page.
  *
- * Everything that decides ownership, deduplication and screening lives here, so the website
- * importer can never accidentally follow different rules from the agency portal.
+ * Everything that decides ownership, deduplication and screening lives here, so a public
+ * application can never accidentally follow different rules from an agency one.
  */
 
 export type SubmissionInput = {

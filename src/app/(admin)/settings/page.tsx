@@ -1,7 +1,6 @@
-import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
-import { isEmailConfigured, isSheetsConfigured, isStorageConfigured } from "@/lib/env";
+import { isCareersApiConfigured, isEmailConfigured, isStorageConfigured } from "@/lib/env";
 import { StageEditor, type EditableStage } from "@/components/stage-editor";
 import {
   Badge,
@@ -56,10 +55,10 @@ export default async function SettingsPage() {
       effect: "Invites and stage notifications are logged but not delivered.",
     },
     {
-      name: "Google Sheets",
-      ready: isSheetsConfigured(),
-      hint: "GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY (shared with Drive)",
-      effect: "Website leads won't be imported.",
+      name: "Careers site API",
+      ready: isCareersApiConfigured(),
+      hint: "CAREERS_API_KEY",
+      effect: "Your careers page can't post applications — /api/public refuses every request.",
     },
   ];
 
@@ -68,11 +67,6 @@ export default async function SettingsPage() {
       <PageHeader
         title="Settings"
         description="The funnel, integrations and the audit trail."
-        action={
-          <Link href="/settings/sheets" className="text-sm font-medium underline">
-            Google Sheets sources →
-          </Link>
-        }
       />
 
       <Card>

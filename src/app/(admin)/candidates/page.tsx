@@ -87,7 +87,7 @@ export default async function CandidatesPage({
             description={
               search
                 ? "Nobody matches that search."
-                : "Candidates arrive from agency submissions and the website leads sheet."
+                : "Candidates arrive from agency submissions and your careers page."
             }
           />
         ) : (

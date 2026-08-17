@@ -1,8 +1,8 @@
 # Hiring Portal
 
 A two-sided hiring portal: external recruiting agencies submit candidates through their own
-logins, website leads flow in from a Google Sheet, and everything lands in one funnel you
-control.
+logins, your careers page posts applications straight in, and everything lands in one funnel
+you control.
 
 - **Agency side** (`/agency`) — each agency signs in, sees only the roles you've assigned it,
   submits several candidates at a time with resumes and your qualifying questions, and follows
@@ -16,7 +16,7 @@ control.
 - [The data model](#the-data-model)
 - [Getting started](#getting-started)
 - [Deploying](#deploying)
-- [Connecting your Google Sheet](#connecting-your-google-sheet)
+- [Careers site integration](docs/CAREERS-API.md)
 - [Resumes in Google Drive](#resumes-in-google-drive)
 - [Day-to-day use](#day-to-day-use)
 - [Testing](#testing)
@@ -89,15 +89,18 @@ Every move writes an immutable `stage_transitions` row recording who moved whom,
 why. `applications.currentStageId` is a cache of the newest transition, written in the same
 transaction, so the board stays fast without ever disagreeing with the history.
 
-### Website leads arrive on their own
+### Applications come straight from your careers page
 
-Two triggers, one code path. An Apps Script webhook fires the instant a row lands in your
-sheet, and a Vercel Cron job pulls every 10 minutes as a safety net — because Apps Script
-triggers get silently disabled and nobody notices until a week of leads has gone missing.
+Your careers site posts directly into the portal — no spreadsheet, no Apps Script, no import
+step. It reads the open roles and their questions from the portal, so publishing a role or
+adding a question takes effect on the careers page with no code change, then posts the
+application back.
 
-Running both is safe: every row is keyed by a content hash in `imported_rows`, so whichever
-arrives second is a no-op. Rows that can't be mapped are stored as `NEEDS_REVIEW` with the
-reason and surfaced in the UI, never silently dropped.
+Website applicants go through the *same* function as agency submissions, so they're deduplicated
+against agency candidates, screened against the same questions and land in the same entry stage.
+Resumes go straight from the applicant's browser to your Drive folder.
+
+Integration details are in [`docs/CAREERS-API.md`](docs/CAREERS-API.md).
 
 ## The data model
 
@@ -116,7 +119,7 @@ and expected CTC under X" stays an indexed query), `duplicate_submissions`.
 **Funnel** — `stages`, `stage_transitions` (append-only), `interviews`, `notes` (INTERNAL by
 default; sharing with an agency is a deliberate act), `activity_log`.
 
-**Infrastructure** — `files`, `sheet_sources`, `imported_rows`, `sheet_sync_runs`, `email_log`.
+**Infrastructure** — `files` (Drive metadata; the bytes live in Drive), `email_log`.
 
 Three consistency rules are enforced by the database itself, not just by application code:
 
@@ -138,7 +141,7 @@ cp .env.example .env
 # Generate a secret with: openssl rand -base64 48
 
 npm run db:deploy    # create the schema
-npm run db:seed      # funnel stages + your first admin account
+npm run db:seed      # funnel stages + your first admin account (deploys do this for you)
 npm run dev
 ```
 
@@ -153,13 +156,13 @@ npm run db:demo
 
 ### First-run checklist
 
-1. **Settings → Integrations** — confirm what's configured. The app runs without storage,
-   email or Sheets; those features degrade with a clear message rather than breaking.
+1. **Settings → Integrations** — confirm what's configured. The app runs without Drive,
+   email or the careers key; those features degrade with a clear message rather than breaking.
 2. **Roles** — create a role, set it to **Open**, add its qualifying questions.
 3. **Agencies** — add an agency, then create a login for their recruiter (they get an emailed
    invite; if email isn't configured, the UI hands you a copyable link).
 4. **Agencies → assign a role** — optionally with a submission cap.
-5. **Settings → Google Sheets** — point the portal at your leads spreadsheet.
+5. **Careers page** — set `CAREERS_API_KEY` and wire it up per [`docs/CAREERS-API.md`](docs/CAREERS-API.md).
 
 ## Deploying
 
@@ -188,46 +191,72 @@ Framework detection and build settings need no changes.
 
 ### 3. Set the environment variables
 
-**Required — the app returns an error on every request without these:**
+Ten variables, all set in **Project → Settings → Environment Variables**.
+
+**The app returns an error on every request without these four:**
 
 | Variable | Notes |
 |---|---|
 | `DATABASE_URL` | Pooled connection string |
-| `SESSION_SECRET` | 32+ random characters — `openssl rand -base64 48`. Changing it signs everyone out |
-| `APP_URL` | Your real domain. Invite links point here, so localhost means broken invites |
+| `DIRECT_DATABASE_URL` | Direct connection string — used only by migrations |
+| `SESSION_SECRET` | 32+ random characters: `openssl rand -base64 48`. Changing it signs everyone out |
+| `APP_URL` | Your real domain, **including `https://`**. Invite links point here |
 
-**Recommended:**
+**Resumes need these three** — see [Resumes in Google Drive](#resumes-in-google-drive):
 
 | Variable | Notes |
 |---|---|
-| `DIRECT_DATABASE_URL` | Direct connection string, used only by migrations |
-| `CRON_SECRET` | `openssl rand -hex 32`. Without it the sync endpoint rejects Vercel's cron |
-| `SHEETS_WEBHOOK_SECRET` | `openssl rand -hex 32`. Needed for the Apps Script push |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` from the service account JSON |
+| `GOOGLE_PRIVATE_KEY` | `private_key` from the same JSON |
+| `GOOGLE_DRIVE_FOLDER_ID` | A folder inside a **Shared Drive** |
 
-**Optional — each switches on a feature, and Settings → Integrations says so when one is
-missing:** `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` (one service account, used for
-both Drive and Sheets), `GOOGLE_DRIVE_FOLDER_ID` (resume storage and in-portal preview),
-`RESEND_API_KEY` (invite and notification emails).
+**Your login needs these two,** read by the seed that runs on every deploy:
+
+| Variable | Notes |
+|---|---|
+| `SEED_ADMIN_EMAIL` | The address you'll sign in with |
+| `SEED_ADMIN_PASSWORD` | Delete it once you've logged in — the build log says when |
+
+**Your careers page needs one:**
+
+| Variable | Notes |
+|---|---|
+| `CAREERS_API_KEY` | `openssl rand -hex 32`. Until it's set, `/api/public` refuses everything |
+
+Optional: `RESEND_API_KEY` and `EMAIL_FROM` for email. Without them, invites are logged and the
+UI gives you a copyable link instead — a perfectly workable way to run the portal.
+Settings → Integrations shows which of these are configured.
 
 ### 4. Deploy
 
-Each build runs `prisma generate`, then `prisma migrate deploy` **if** a database is configured,
-then `next build`. So a schema change reaches production by pushing — no terminal step. Before
-you've set `DATABASE_URL` the migration is skipped with a log line rather than failing the build.
+Each build runs `prisma generate`, then — **if** a database is configured — `prisma migrate
+deploy` and the seed, then `next build`.
 
-### 5. Seed the first admin
+That means there is no terminal step at any point. The first deploy with `DATABASE_URL` set
+creates all 18 tables, the 12 funnel stages and your admin account. Before you've set it, both
+steps skip with a log line rather than failing the build, which is what lets the very first
+deploy go green before there's a database to attach.
 
-One manual step, once, to create the funnel stages and your login:
+Watch the build log for:
 
-```bash
-DATABASE_URL="<direct connection string>" \
-SEED_ADMIN_EMAIL="you@yourcompany.com" \
-SEED_ADMIN_PASSWORD="<a strong password>" \
-npm run db:seed
+```
+• Applying database migrations…
+• Seeding funnel stages and the first admin…
+✓ 12 funnel stages
+✓ admin created: you@yourcompany.com
 ```
 
-Then sign in at your domain. `vercel.json` already registers the 10-minute Sheets sync;
-schedules more frequent than daily need a Vercel Pro account.
+If it says `No DATABASE_URL configured — skipping` instead, the variable isn't set on the
+deployment, or you haven't redeployed since setting it.
+
+### 5. Log in, then delete one variable
+
+Sign in at your domain with `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`, then **delete
+`SEED_ADMIN_PASSWORD`** from the environment variables. It is never read again — every later
+deploy prints `SEED_ADMIN_PASSWORD is no longer read — you can delete it.` as a reminder.
+
+Deploys never create an administrator with a default password: if `SEED_ADMIN_PASSWORD` is
+unset, the seed creates the stages, skips the admin, and says so.
 
 **Resume storage** is Google Drive — see [Resumes in Google Drive](#resumes-in-google-drive).
 
@@ -241,31 +270,10 @@ seat rather than being billed separately.
 | `PrismaConfigEnvError: Cannot resolve environment variable` | An older checkout. `prisma.config.ts` must read `process.env` and omit `datasource` when unset |
 | Build dies at "Collecting page data" | Something reads env at module scope. The Prisma client in `src/lib/db.ts` is deliberately lazy for this reason |
 | `Invalid environment configuration` on first request | A required variable is missing. The message names it |
-| `Hobby accounts are limited to daily cron jobs` | Either move to Pro or set `vercel.json` to a daily schedule |
 | Connection limit errors under load | `DATABASE_URL` is the direct string; switch it to the pooled one |
 | `403 storageQuotaExceeded` on upload | `GOOGLE_DRIVE_FOLDER_ID` points into someone's My Drive. It has to be a folder in a **Shared Drive** |
 | "The resume folder isn't reachable" | The service account isn't a member of that Shared Drive, or the folder id is wrong |
 | Resumes over ~4.5 MB fail to download | A read path is buffering instead of streaming. `npm test` covers this |
-
-## Connecting your Google Sheet
-
-1. In Google Cloud: create a project, enable the **Google Sheets API**, create a **service
-   account**, and download a JSON key.
-2. Set `GOOGLE_SERVICE_ACCOUNT_EMAIL` and `GOOGLE_PRIVATE_KEY` (paste the whole key; literal
-   `\n` sequences are handled).
-3. Share your leads spreadsheet with that service account email — **viewer** access is enough.
-   The portal only ever reads.
-4. In the portal: **Settings → Google Sheets**. Paste the spreadsheet URL, name the tab, and
-   click **Read columns from the sheet**. Map the real headers to candidate fields, pick a
-   default role, and save.
-5. Click **Import now** to pull in existing rows.
-6. Optional, for instant imports: copy the generated Apps Script from that page into
-   **Extensions → Apps Script** on your sheet and add an *On form submit* trigger. The
-   scheduled pull catches anything the script misses.
-
-The webhook payload only names *which* sheet changed — the portal then reads it with its own
-credentials. A leaked webhook secret can trigger an import but can never inject a fabricated
-candidate.
 
 ## Resumes in Google Drive
 
@@ -275,8 +283,14 @@ Drive to decide on a candidate.
 
 ### Setup, once
 
-1. In Google Cloud, same project as Sheets: enable the **Google Drive API**. The service account
-   and key you already created for Sheets are reused; there is no second credential.
+1. In Google Cloud: create a project and enable the **Google Drive API**, then create a
+   **service account** and download a JSON key.
+
+   If your organisation blocks key creation with `iam.managed.disableServiceAccountKeyCreation`
+   — the default on new Google Cloud organisations — an Organisation Policy Administrator can
+   override that constraint on this one project (IAM & Admin → Organization Policies →
+   Manage policy → Override parent's policy → Enforcement Off). The constraint is evaluated only
+   at creation time, so you can restore it immediately after minting the key.
 2. In Drive, create a **Shared Drive** (e.g. "Hiring") and a folder inside it, "Resumes".
 3. Add the service account email as a **Content manager** of that Shared Drive.
 4. Copy the folder id out of its URL — `drive.google.com/drive/folders/<THIS PART>` — and set
@@ -360,8 +374,8 @@ rather than raw volume, source comparison, and everyone stuck for more than 14 d
 ## Testing
 
 ```bash
-npm test         # unit tests: normalisation, dedupe, screening rules, sheet mapping, storage
-npm run verify   # end-to-end against a real database (39 checks)
+npm test         # unit tests: normalisation, dedupe, screening, storage, public API guard
+npm run verify   # end-to-end against a real database (56 checks)
 npm run lint
 npm run typecheck
 npm run build
@@ -370,8 +384,10 @@ npm run build
 `npm run verify` is the one that matters most. It proves the things unit tests can't: that the
 unique index really blocks a second agency, that tenant scoping really returns null across
 agencies, that internal notes really don't reach the agency portal, that stage history stays
-consistent with the cached column, and that the database check constraints hold. It cleans up
-after itself and is safe to re-run.
+consistent with the cached column, that the database check constraints hold — and that the
+public careers API never serialises a screening rule, while a duplicate application is
+byte-for-byte indistinguishable from a first one. It cleans up after itself and is safe to
+re-run.
 
 Manual QA steps are in [`docs/QA.md`](docs/QA.md).
 
@@ -391,8 +407,7 @@ src/
     api/
       uploads/             Drive resumable upload sessions, and the completion check
       files/[id]/          authorised resume download, and the streamed preview
-      webhooks/sheets/     Apps Script push
-      cron/sheets-sync/    scheduled safety-net pull
+      public/              the careers site API — roles, uploads, applications
     login/, set-password/  authentication
 
   lib/
@@ -401,13 +416,13 @@ src/
     dedupe.ts              candidate identity resolution
     screening.ts           answer coercion and screening rules
     funnel.ts              stage transitions and the audit trail
-    sheets.ts              Google Sheets ingestion
-    sheet-mapping.ts       pure row hashing and column mapping
     normalize.ts           email, phone, currency, notice period, experience
     auth.ts                sessions and role guards
     password.ts            scrypt hashing
     storage.ts             Google Drive: uploads, streaming reads, Word→PDF preview
-    google-auth.ts         one service-account JWT, shared by Drive and Sheets
+    google-auth.ts         service-account JWT for Drive
+    public-api.ts          the API-key and rate-limit guard on every public route
+    secrets.ts             timing-safe shared-secret comparison
     file-access.ts         who may read a file, and the headers every file response carries
     review.ts              the triage queue and its stage targets
     email.ts               transactional email, every send logged

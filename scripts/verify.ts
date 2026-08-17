@@ -51,6 +51,14 @@ const EMAIL_CAP = `${TAG}-vikram@example.com`;
 const PHONE_LOCAL = `9${String(Date.now()).slice(-9)}`;
 const PHONE_E164 = `+91${PHONE_LOCAL}`;
 
+/**
+ * Set here rather than inside main(), because `env()` parses and caches the whole environment
+ * on its first call — which happens on the first Prisma query, long before the public-API
+ * section runs. Assigning it later would leave the guard seeing no key and returning 503.
+ */
+const CAREERS_KEY = `${TAG}-careers-key-long-enough-to-be-real`;
+process.env.CAREERS_API_KEY = CAREERS_KEY;
+
 async function main() {
   console.log("\nHiring Portal — end-to-end verification\n");
 
@@ -437,6 +445,122 @@ async function main() {
 
   const defaultStages = await prisma.stage.count({ where: { isDefault: true } });
   check("exactly one entry stage is configured", defaultStages === 1, defaultStages);
+
+  // --- 10. The public careers API ---------------------------------------
+  console.log("\n10. The public careers API");
+
+  const { GET: getRoles } = await import("../src/app/api/public/roles/route.js");
+  const { POST: postApplication } = await import("../src/app/api/public/applications/route.js");
+
+  const publicReq = (path: string, init?: RequestInit) =>
+    new Request(`https://portal.example.com/api/public/${path}`, {
+      headers: { "x-api-key": CAREERS_KEY, "content-type": "application/json" },
+      ...init,
+    });
+
+  const unauthorised = await getRoles(
+    new Request("https://portal.example.com/api/public/roles", {
+      headers: { "x-api-key": "wrong-key-of-the-same-ish-length" },
+    }),
+  );
+  check("a wrong API key is rejected", unauthorised.status === 401, unauthorised.status);
+
+  const pausedRole = await prisma.jobRole.create({
+    data: { title: `${TAG} Paused Role`, status: "PAUSED", createdByUserId: admin.id },
+  });
+
+  const rolesResponse = await getRoles(publicReq("roles"));
+  const rolesBody = (await rolesResponse.json()) as {
+    roles: Array<{ id: string; questions: Array<Record<string, unknown>> }>;
+  };
+  const listed = rolesBody.roles.find((r) => r.id === role.id);
+
+  check("the open role is listed", Boolean(listed), rolesBody.roles.length);
+  check(
+    "a paused role is not listed",
+    !rolesBody.roles.some((r) => r.id === pausedRole.id),
+  );
+
+  // The screening rule on this role is "notice ≤ 30 days". An applicant who can read that
+  // simply answers 30. This is the check that stops the public endpoint handing it over.
+  const serialised = JSON.stringify(rolesBody);
+  check("screening rules are not exposed", !serialised.includes("knockoutRule"), serialised.slice(0, 200));
+  check("which questions are screeners is not exposed", !serialised.includes("isKnockout"));
+  check("the internal budget ceiling is not exposed", !serialised.includes("maxBudgetCtc"));
+  check(
+    "questions still carry what a form needs",
+    Boolean(listed?.questions.some((q) => q.id === noticeQuestion.id && q.label && q.type)),
+    listed?.questions,
+  );
+
+  const applyBody = {
+    jobRoleId: role.id,
+    fullName: "Website Applicant",
+    email: `${TAG}-website@example.com`,
+    phone: `${PHONE_LOCAL}77`,
+    expectedCtc: "22 LPA",
+    noticePeriod: "45 days",
+    answers: { [noticeQuestion.id]: 45, [relocateQuestion.id]: true },
+  };
+
+  const applied = await postApplication(
+    publicReq("applications", { method: "POST", body: JSON.stringify(applyBody) }),
+  );
+  const appliedBody = await applied.json();
+  check("an application is accepted", applied.status === 201, applied.status);
+
+  const websiteApp = await prisma.application.findFirst({
+    where: { candidate: { email: `${TAG}-website@example.com` } },
+    include: { currentStage: true, candidate: true },
+  });
+  check("it is recorded as a website application", websiteApp?.source === "WEBSITE", websiteApp?.source);
+  check("it belongs to no agency", websiteApp?.agencyId === null, websiteApp?.agencyId);
+  check(
+    "it lands in the entry stage like any other submission",
+    websiteApp?.currentStage.slug === "received",
+    websiteApp?.currentStage.slug,
+  );
+  check(
+    "the failed screening rule is flagged, not rejected",
+    Array.isArray(websiteApp?.knockoutFlags) &&
+      (websiteApp.knockoutFlags as string[]).includes(noticeQuestion.id),
+    websiteApp?.knockoutFlags,
+  );
+
+  // Applying twice must look identical from outside, or the endpoint becomes a way to ask
+  // "is this person already in your pipeline?" one email address at a time.
+  const reapplied = await postApplication(
+    publicReq("applications", { method: "POST", body: JSON.stringify(applyBody) }),
+  );
+  const reappliedBody = await reapplied.json();
+  check(
+    "a duplicate returns the same status code",
+    reapplied.status === applied.status,
+    reapplied.status,
+  );
+  check(
+    "a duplicate returns the same body",
+    JSON.stringify(reappliedBody) === JSON.stringify(appliedBody),
+    { first: appliedBody, second: reappliedBody },
+  );
+
+  const websiteApps = await prisma.application.count({
+    where: { candidate: { email: `${TAG}-website@example.com` } },
+  });
+  check("but only one application exists", websiteApps === 1, websiteApps);
+
+  const dupeRecord = await prisma.duplicateSubmission.count({
+    where: { jobRoleId: role.id, candidate: { email: `${TAG}-website@example.com` } },
+  });
+  check("and you can still see the duplicate attempt", dupeRecord === 1, dupeRecord);
+
+  const closedRole = await postApplication(
+    publicReq("applications", {
+      method: "POST",
+      body: JSON.stringify({ ...applyBody, jobRoleId: pausedRole.id }),
+    }),
+  );
+  check("applying to a paused role is refused", closedRole.status === 404, closedRole.status);
 
   // --- Cleanup ----------------------------------------------------------
   console.log("\nCleaning up…");

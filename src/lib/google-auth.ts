@@ -5,10 +5,10 @@ import { env, isGoogleConfigured } from "./env";
 /**
  * One place that turns the service account credentials into an authenticated client.
  *
- * Both integrations authenticate the same way but need different scopes — Sheets reads the
- * leads spreadsheet, Drive stores resumes — so the scopes are a parameter and the credential
- * handling (notably the `\n` unescaping that trips everyone up when a private key is pasted
- * into an environment variable) lives here rather than being duplicated per integration.
+ * Only Drive uses this today, but the scopes stay a parameter: the credential handling —
+ * notably the `\n` unescaping that trips everyone up when a private key is pasted into an
+ * environment variable — is the part worth having in exactly one place, and a second Google
+ * API would otherwise duplicate it.
  */
 
 export class GoogleNotConfiguredError extends Error {
@@ -21,10 +21,9 @@ export class GoogleNotConfiguredError extends Error {
   }
 }
 
-/** Scopes used by this app. Drive needs write access; Sheets only ever reads. */
+/** Scopes used by this app. Drive needs write access to store and convert resumes. */
 export const SCOPES = {
   drive: ["https://www.googleapis.com/auth/drive"],
-  sheetsReadonly: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
 } as const;
 
 const cache = new Map<string, InstanceType<typeof google.auth.JWT>>();

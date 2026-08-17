@@ -2,7 +2,7 @@
  * Normalisation rules used everywhere a candidate identity is written or looked up.
  *
  * Deduplication is only as good as the normalisation feeding it, so every entry point —
- * the agency form, the Sheets importer, the seed script — goes through these functions.
+ * the agency form, the careers API, the seed script — goes through these functions.
  * Nothing else should lowercase an email or strip a phone number by hand.
  */
 

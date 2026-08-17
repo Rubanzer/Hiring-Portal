@@ -72,16 +72,42 @@ async function seedStages() {
   console.log(`✓ ${STAGES.length} funnel stages`);
 }
 
+/**
+ * `--require-password` is passed when this runs as part of a deploy.
+ *
+ * Interactively, falling back to a known password is a convenience — you are looking at the
+ * terminal, you see it printed, and the app is on localhost. On a deploy nobody reads the build
+ * log, and the result would be an admin account with a published default password on a public
+ * URL. So the deploy path refuses the fallback rather than using it.
+ */
+const requirePassword = process.argv.includes("--require-password");
+
 async function seedAdmin() {
   const email = (process.env.SEED_ADMIN_EMAIL ?? "admin@example.com").toLowerCase();
-  const password = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe12345";
   const name = process.env.SEED_ADMIN_NAME ?? "Portal Admin";
+  const supplied = process.env.SEED_ADMIN_PASSWORD;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     console.log(`• admin ${email} already exists, left untouched`);
+    if (supplied) {
+      // Said on every deploy after the first, because this is the one variable that stops being
+      // needed the moment it has been used once, and nobody goes looking for that.
+      console.log("  SEED_ADMIN_PASSWORD is no longer read — you can delete it.");
+    }
     return;
   }
+
+  if (!supplied && requirePassword) {
+    console.log(
+      "• admin not created: SEED_ADMIN_PASSWORD is not set.\n" +
+        "  Refusing to create an administrator with a default password on a deployment.\n" +
+        "  Set SEED_ADMIN_PASSWORD (and SEED_ADMIN_EMAIL) and redeploy.",
+    );
+    return;
+  }
+
+  const password = supplied ?? "ChangeMe12345";
 
   await prisma.user.create({
     data: {
@@ -93,7 +119,7 @@ async function seedAdmin() {
   });
 
   console.log(`✓ admin created: ${email}`);
-  if (!process.env.SEED_ADMIN_PASSWORD) {
+  if (!supplied) {
     console.log(`  password: ${password}  ← change this immediately`);
   }
 }
