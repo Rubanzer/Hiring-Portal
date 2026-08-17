@@ -4,6 +4,7 @@ import { createSubmission } from "../src/lib/submissions.js";
 import { moveApplicationToStage } from "../src/lib/funnel.js";
 import {
   getAgencyApplication,
+  getAgencyRole,
   checkSubmissionAllowance,
   listAgencyRoles,
 } from "../src/lib/tenancy.js";
@@ -126,11 +127,11 @@ async function main() {
   });
 
   // --- 1. Agency role visibility ---------------------------------------
-  console.log("\n1. Role assignment controls what an agency sees");
+  console.log("\n1. What an agency can see");
 
   const rolesForA = await listAgencyRoles(agencyA.id);
   check(
-    "agency A sees the role assigned to it",
+    "an assigned agency sees the role",
     rolesForA.some((r) => r.role.id === role.id),
   );
 
@@ -138,7 +139,21 @@ async function main() {
     data: { name: `${TAG} Agency C`, slug: `${TAG}-c` },
   });
   const rolesForC = await listAgencyRoles(unassignedAgency.id);
-  check("an unassigned agency sees no roles", rolesForC.length === 0, rolesForC.length);
+  // Inverted deliberately: an assignment is no longer what grants visibility, only what
+  // restricts it. Section 11 covers the restricted case.
+  check(
+    "an unassigned agency also sees it, because open roles are open to everyone",
+    rolesForC.some((r) => r.role.id === role.id),
+    rolesForC.length,
+  );
+
+  const draftRole = await prisma.jobRole.create({
+    data: { title: `${TAG} Draft Role`, status: "DRAFT", createdByUserId: admin.id },
+  });
+  check(
+    "but a draft role is invisible to everyone",
+    !(await listAgencyRoles(agencyA.id)).some((r) => r.role.id === draftRole.id),
+  );
 
   // --- 2. Submission, screening and flagging ---------------------------
   console.log("\n2. Submissions, screening flags and the opening stage");
@@ -561,6 +576,96 @@ async function main() {
     }),
   );
   check("applying to a paused role is refused", closedRole.status === 404, closedRole.status);
+
+  // --- 11. Roles are open to every agency by default ---------------------
+  console.log("\n11. Roles are open by default, restricted only when you say so");
+
+  // agencyC has no assignment to anything — the point is that it can still see an open role.
+  const openToAll = await listAgencyRoles(unassignedAgency.id);
+  check(
+    "an agency with no assignments sees an open role",
+    openToAll.some((r) => r.role.id === role.id),
+    openToAll.map((r) => r.role.title),
+  );
+  check(
+    "and can submit against it",
+    (await getAgencyRole(unassignedAgency.id, role.id)) !== null,
+  );
+  check(
+    "with no submission cap, since it has no assignment",
+    (await checkSubmissionAllowance(unassignedAgency.id, role.id)).allowed,
+  );
+
+  await prisma.jobRole.update({
+    where: { id: role.id },
+    data: { restrictedToAssignedAgencies: true },
+  });
+
+  const afterRestrict = await listAgencyRoles(unassignedAgency.id);
+  check(
+    "restricting it hides it from the unassigned agency",
+    !afterRestrict.some((r) => r.role.id === role.id),
+  );
+  check(
+    "and blocks submission",
+    (await getAgencyRole(unassignedAgency.id, role.id)) === null,
+  );
+  check(
+    "while the assigned agency still sees it",
+    (await listAgencyRoles(agencyA.id)).some((r) => r.role.id === role.id),
+  );
+  check(
+    "and its submission cap still applies",
+    (await listAgencyRoles(agencyB.id)).find((r) => r.role.id === role.id)?.submissionLimit === 1,
+  );
+
+  await prisma.jobRole.update({
+    where: { id: role.id },
+    data: { restrictedToAssignedAgencies: false },
+  });
+
+  // --- 12. Deleting a login keeps the work -------------------------------
+  console.log("\n12. Deleting a login keeps everything they submitted");
+
+  const doomed = await prisma.user.create({
+    data: {
+      email: `${TAG}-leaver@example.com`,
+      name: "Departing Recruiter",
+      role: "AGENCY_RECRUITER",
+      agencyId: agencyA.id,
+      passwordHash: await hashPassword("LeaverPass123"),
+    },
+  });
+
+  const theirSubmission = await createSubmission({
+    jobRoleId: role.id,
+    source: "AGENCY",
+    agencyId: agencyA.id,
+    submittedByUserId: doomed.id,
+    fullName: "Left Behind",
+    email: `${TAG}-leftbehind@example.com`,
+    answers: { [noticeQuestion.id]: "15" },
+  });
+  check("their submission is created", theirSubmission.status === "created", theirSubmission);
+
+  await prisma.user.delete({ where: { id: doomed.id } });
+
+  const survivor = await prisma.application.findFirst({
+    where: { candidate: { email: `${TAG}-leftbehind@example.com` } },
+    include: { currentStage: true },
+  });
+  check("the application survives the deletion", survivor !== null);
+  check(
+    "still credited to the agency",
+    survivor?.agencyId === agencyA.id,
+    survivor?.agencyId,
+  );
+  check(
+    "with the submitter blanked rather than the row removed",
+    survivor?.submittedByUserId === null,
+    survivor?.submittedByUserId,
+  );
+  check("and still sitting in its stage", Boolean(survivor?.currentStage.name));
 
   // --- Cleanup ----------------------------------------------------------
   console.log("\nCleaning up…");

@@ -11,45 +11,74 @@ import { prisma } from "./db";
  */
 
 /** Roles this agency is allowed to submit against right now. */
+/**
+ * The roles this agency can submit against.
+ *
+ * Open by default: an OPEN role is visible to every agency unless it is flagged
+ * `restrictedToAssignedAgencies`, in which case an active assignment is required. Assignments
+ * still exist for every role — they carry the per-agency submission cap — they just no longer
+ * decide visibility on their own.
+ *
+ * Expressed as one query with an OR rather than two queries merged in code, so paging and
+ * ordering stay the database's job.
+ */
 export async function listAgencyRoles(agencyId: string) {
-  const assignments = await prisma.agencyJobAssignment.findMany({
+  const roles = await prisma.jobRole.findMany({
     where: {
-      agencyId,
-      isActive: true,
-      jobRole: { status: "OPEN" },
+      status: "OPEN",
+      OR: [
+        { restrictedToAssignedAgencies: false },
+        { assignments: { some: { agencyId, isActive: true } } },
+      ],
     },
     include: {
-      jobRole: {
-        include: {
-          questions: { orderBy: { sortOrder: "asc" } },
-          // Only ever this agency's own submissions, so the count can't leak rival volume.
-          _count: { select: { applications: { where: { agencyId } } } },
-        },
-      },
+      questions: { orderBy: { sortOrder: "asc" } },
+      // Only ever this agency's own submissions, so the count can't leak rival volume.
+      _count: { select: { applications: { where: { agencyId } } } },
+      // At most one row — the unique index is on (agencyId, jobRoleId).
+      assignments: { where: { agencyId }, take: 1 },
     },
-    orderBy: { assignedAt: "desc" },
+    orderBy: [{ createdAt: "desc" }],
   });
 
-  return assignments.map((a) => ({
-    assignmentId: a.id,
-    submissionLimit: a.submissionLimit,
-    submittedCount: a.jobRole._count.applications,
-    role: a.jobRole,
+  return roles.map((role) => ({
+    assignmentId: role.assignments[0]?.id ?? null,
+    submissionLimit: role.assignments[0]?.submissionLimit ?? null,
+    submittedCount: role._count.applications,
+    role,
   }));
 }
 
-/** One role, but only if this agency has an active assignment to it. */
+/**
+ * One role, if this agency may submit against it.
+ *
+ * Returns an assignment-shaped object whether or not a real assignment row exists, because an
+ * unrestricted role is reachable without one — callers only need the submission cap, which is
+ * null when uncapped.
+ */
 export async function getAgencyRole(agencyId: string, jobRoleId: string) {
-  const assignment = await prisma.agencyJobAssignment.findUnique({
-    where: { agencyId_jobRoleId: { agencyId, jobRoleId } },
+  const role = await prisma.jobRole.findUnique({
+    where: { id: jobRoleId },
     include: {
-      jobRole: { include: { questions: { orderBy: { sortOrder: "asc" } } } },
+      questions: { orderBy: { sortOrder: "asc" } },
+      assignments: { where: { agencyId }, take: 1 },
     },
   });
 
-  if (!assignment || !assignment.isActive) return null;
-  if (assignment.jobRole.status !== "OPEN") return null;
-  return assignment;
+  if (!role || role.status !== "OPEN") return null;
+
+  const assignment = role.assignments[0];
+  // A restricted role needs an assignment that is actually switched on. An unrestricted one is
+  // still blocked if its assignment was explicitly deactivated — that is how you revoke a
+  // single agency without restricting the role to everyone else.
+  if (role.restrictedToAssignedAgencies && (!assignment || !assignment.isActive)) return null;
+  if (assignment && !assignment.isActive) return null;
+
+  return {
+    id: assignment?.id ?? null,
+    submissionLimit: assignment?.submissionLimit ?? null,
+    jobRole: role,
+  };
 }
 
 /**

@@ -1,7 +1,7 @@
 import "server-only";
 import { Readable } from "node:stream";
 import { google, type drive_v3 } from "googleapis";
-import { env, isStorageConfigured } from "./env";
+import { appUrl, env, isStorageConfigured } from "./env";
 import { googleAccessToken, googleJwt, SCOPES } from "./google-auth";
 
 /**
@@ -172,6 +172,18 @@ function realDriveClient(): DriveClient {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json; charset=UTF-8",
             "X-Upload-Content-Type": mimeType,
+            /**
+             * The header the whole browser upload depends on.
+             *
+             * The browser PUTs the bytes to the session URI this call returns, which is a
+             * cross-origin request. Google decides *here* — when the session is opened — which
+             * origin is allowed to use it, and bakes that into the session. Omit this and the
+             * session URI carries no CORS permission, so the browser's preflight is refused and
+             * every upload fails with a bare network error that names nothing.
+             *
+             * It has to be the origin the browser is on, which is this deployment's own address.
+             */
+            Origin: new URL(appUrl()).origin,
           },
           body: JSON.stringify({}),
         },

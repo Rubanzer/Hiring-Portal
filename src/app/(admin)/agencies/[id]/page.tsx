@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireInternal } from "@/lib/auth";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { DeleteUserButton, SetPasswordButton } from "@/components/user-actions";
+import { deleteUserAction, setUserPasswordAction } from "../../users/actions";
 import {
   Alert,
   Badge,
@@ -37,7 +39,11 @@ export default async function AgencyDetailPage({
   const agency = await prisma.agency.findUnique({
     where: { id },
     include: {
-      users: { orderBy: { createdAt: "asc" } },
+      users: {
+        // The count feeds the delete confirmation, so it can say what survives.
+        include: { _count: { select: { submittedApps: true } } },
+        orderBy: { createdAt: "asc" },
+      },
       jobAssignments: {
         include: { jobRole: { select: { id: true, title: true, status: true } } },
         orderBy: { assignedAt: "desc" },
@@ -236,6 +242,21 @@ export default async function AgencyDetailPage({
                       {!user.isActive ? <Badge color="#dc2626">Disabled</Badge> : null}
                     </div>
                   </div>
+                  {isAdmin ? (
+                    <div className="mt-2 flex flex-wrap items-start gap-2">
+                      <SetPasswordButton
+                        userId={user.id}
+                        email={user.email}
+                        action={setUserPasswordAction}
+                      />
+                      <DeleteUserButton
+                        userId={user.id}
+                        name={user.name}
+                        submittedCount={user._count.submittedApps}
+                        action={deleteUserAction}
+                      />
+                    </div>
+                  ) : null}
                   <p className="mt-1 text-xs text-ink-400">
                     {user.lastLoginAt
                       ? `Last signed in ${formatDateTime(user.lastLoginAt)}`

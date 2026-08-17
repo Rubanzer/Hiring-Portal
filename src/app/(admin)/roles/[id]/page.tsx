@@ -220,6 +220,21 @@ export default async function RoleDetailPage({
                 <option value="CLOSED">Closed</option>
               </Select>
             </Field>
+            <label className="flex items-start gap-2.5 rounded-lg border border-ink-200 p-3">
+              <input
+                type="checkbox"
+                name="restrictedToAssignedAgencies"
+                defaultChecked={role.restrictedToAssignedAgencies}
+                className="mt-0.5 h-4 w-4 rounded border-ink-300"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-ink-900">Restrict to specific agencies</span>
+                <span className="mt-0.5 block text-xs text-ink-500">
+                  Off by default: every agency sees this role once it&apos;s Open. Turn it on for a
+                  confidential search, then assign the agencies you want working it below.
+                </span>
+              </span>
+            </label>
             <SubmitButton pendingLabel="Saving…">Save role</SubmitButton>
           </ActionForm>
         </Card>

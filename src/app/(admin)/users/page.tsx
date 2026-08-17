@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { DeleteUserButton, SetPasswordButton } from "@/components/user-actions";
 import {
   Badge,
   Card,
@@ -15,7 +16,9 @@ import {
 } from "@/components/ui";
 import {
   createInternalUserAction,
+  deleteUserAction,
   resendInviteAction,
+  setUserPasswordAction,
   toggleUserActiveAction,
 } from "./actions";
 
@@ -32,7 +35,12 @@ export default async function UsersPage() {
   await requireAdmin();
 
   const users = await prisma.user.findMany({
-    include: { agency: { select: { id: true, name: true } } },
+    include: {
+      agency: { select: { id: true, name: true } },
+      // Shown in the delete confirmation, so it can say what survives rather than leaving
+      // you to guess whether the candidates go too.
+      _count: { select: { submittedApps: true } },
+    },
     orderBy: [{ agencyId: "asc" }, { createdAt: "asc" }],
   });
 
@@ -117,6 +125,7 @@ function UserTable({
     passwordHash: string | null;
     lastLoginAt: Date | null;
     agency: { id: string; name: string } | null;
+    _count: { submittedApps: number };
   }>;
 }) {
   return (
@@ -180,6 +189,17 @@ function UserTable({
                           {user.isActive ? "Disable" : "Enable"}
                         </SubmitButton>
                       </ActionForm>
+                      <SetPasswordButton
+                        userId={user.id}
+                        email={user.email}
+                        action={setUserPasswordAction}
+                      />
+                      <DeleteUserButton
+                        userId={user.id}
+                        name={user.name}
+                        submittedCount={user._count.submittedApps}
+                        action={deleteUserAction}
+                      />
                     </div>
                   </td>
                 </tr>

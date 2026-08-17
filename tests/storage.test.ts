@@ -8,6 +8,17 @@ process.env.SESSION_SECRET ??= "test-session-secret-at-least-32-characters";
 process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ??= "portal@example.iam.gserviceaccount.com";
 process.env.GOOGLE_PRIVATE_KEY ??= "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----";
 process.env.GOOGLE_DRIVE_FOLDER_ID ??= "folder-123";
+process.env.APP_URL ??= "https://portal.example.com";
+
+/**
+ * The real client signs a JWT to get an access token, which a fake private key can't do. Only
+ * the outgoing request shape matters here, so the token is stubbed and everything else stays
+ * the real implementation.
+ */
+vi.mock("../src/lib/google-auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/google-auth")>()),
+  googleAccessToken: async () => "test-access-token",
+}));
 
 const {
   beginUpload,
@@ -142,6 +153,47 @@ describe("beginUpload", () => {
 
     await beginUpload({ fileName: "cv.pdf", mimeType: "application/pdf" });
     expect(seen).toEqual(["folder-123"]);
+  });
+});
+
+describe("the browser upload's CORS permission", () => {
+  /**
+   * The bug this covers made every agency upload fail in production while every test passed.
+   *
+   * The browser PUTs the file to the session URI this call returns, which is cross-origin.
+   * Google decides which origin may use that session *when the session is opened*, from the
+   * Origin header on this request. Without it the session carries no CORS permission, the
+   * browser's preflight is refused, and the upload dies with a bare network error.
+   *
+   * A stubbed Drive client can't reproduce a real preflight, so what's asserted is the one
+   * thing that was missing and is checkable here: that the header goes out at all.
+   */
+  it("tells Google which origin will be uploading", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ location: "https://www.googleapis.com/upload/session/xyz" }),
+        text: async () => "",
+      } as unknown as Response;
+    }) as typeof fetch;
+
+    try {
+      // The real client, not the stub — the header is added in the real implementation.
+      setDriveClient(null);
+      const { drive } = await import("../src/lib/storage");
+      await drive().openResumableSession({ fileId: "drive-1", mimeType: "application/pdf" });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].Origin, "Origin header is what makes the browser PUT legal").toBeTruthy();
+    // An origin, not a full URL with a path — Google matches it against the browser's.
+    expect(seen[0].Origin).toMatch(/^https?:\/\/[^/]+$/);
   });
 });
 

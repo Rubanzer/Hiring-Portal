@@ -18,6 +18,8 @@ const roleSchema = z.object({
   minExperienceMonths: z.string().optional(),
   maxBudgetCtc: z.string().optional(),
   status: z.enum(["DRAFT", "OPEN", "PAUSED", "CLOSED"]),
+  // An unchecked checkbox sends nothing at all, so absence means "open to everyone".
+  restrictedToAssignedAgencies: z.coerce.boolean().default(false),
 });
 
 function optionalInt(raw: string | undefined): number | null {
@@ -91,6 +93,7 @@ export async function updateRoleAction(
     minExperienceMonths: formData.get("minExperienceMonths"),
     maxBudgetCtc: formData.get("maxBudgetCtc"),
     status: formData.get("status"),
+    restrictedToAssignedAgencies: formData.get("restrictedToAssignedAgencies") === "on",
   });
   if (!parsed.success) return { error: parsed.error.issues[0].message };
 
@@ -106,6 +109,7 @@ export async function updateRoleAction(
       minExperienceMonths: optionalInt(parsed.data.minExperienceMonths),
       maxBudgetCtc: optionalInt(parsed.data.maxBudgetCtc),
       status: parsed.data.status,
+      restrictedToAssignedAgencies: parsed.data.restrictedToAssignedAgencies,
     },
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useFormStatus } from "react-dom";
 import {
@@ -123,8 +123,23 @@ export function SubmitCandidatesForm({
     );
   }
 
-  /** Uploads straight to storage via a signed URL, so the file never passes through the app. */
-  async function uploadResume(key: string, file: File) {
+  /**
+   * Every upload in flight or finished, by row key.
+   *
+   * Submitting no longer waits for these. The submission goes through without the resume, and
+   * the effect below attaches each file to its application the moment it lands — so a slow
+   * upload costs the agency nothing.
+   */
+  const uploads = useRef(new Map<string, Promise<string | null>>());
+
+  /** Uploads straight to Drive, so the file never passes through the app. */
+  function uploadResume(key: string, file: File) {
+    const promise = runUpload(key, file);
+    uploads.current.set(key, promise);
+    return promise;
+  }
+
+  async function runUpload(key: string, file: File): Promise<string | null> {
     update(key, { uploading: true, resumeError: null, resumeName: file.name });
     try {
       const response = await fetch("/api/uploads", {
@@ -153,7 +168,11 @@ export function SubmitCandidatesForm({
         headers: { "Content-Type": file.type },
         body: file,
       });
-      if (!put.ok) throw new Error("The file couldn't be uploaded. Try again.");
+      // The status matters: a CORS refusal shows up here as a bare network failure, and an
+      // unnamed "try again" is what made this look like a mystery rather than a fixable fault.
+      if (!put.ok) {
+        throw new Error(`Google rejected the upload (${put.status}). Try again.`);
+      }
 
       // Ask the server to verify with Drive that the bytes actually landed. Without this an
       // interrupted upload would still look attached, and you'd find out when you opened it.
@@ -168,14 +187,77 @@ export function SubmitCandidatesForm({
       }
 
       update(key, { resumeFileId: data.fileId, uploading: false });
+      return data.fileId;
     } catch (error) {
       update(key, {
         uploading: false,
         resumeFileId: null,
         resumeError: error instanceof Error ? error.message : "Upload failed.",
       });
+      return null;
     }
   }
+
+  /**
+   * Attaches resumes that were still uploading when the form was submitted.
+   *
+   * The rows are submitted in order and `results` comes back in that same order, so index i of
+   * one lines up with index i of the other. Only rows that went in *without* a resume are
+   * considered — anything already attached at submit time needs nothing.
+   *
+   * A failure here is deliberately quiet on the candidate's record but loud on the row: the
+   * application itself was created successfully, and telling someone their submission failed
+   * when it didn't would be worse than telling them the resume needs re-adding.
+   */
+  const attached = useRef(new Set<string>());
+
+  /** The rows exactly as they were sent, so results can be lined up against them afterwards. */
+  const [submittedRows, setSubmittedRows] = useState<Row[]>([]);
+
+  useEffect(() => {
+    const results = state.results;
+    if (!results) return;
+
+    const pending = submittedRows
+      .map((row, index) => ({ row, result: results[index] }))
+      .filter(
+        ({ row, result }) =>
+          !row.resumeFileId &&
+          uploads.current.has(row.key) &&
+          !attached.current.has(row.key) &&
+          result?.status === "created",
+      );
+
+    if (pending.length === 0) return;
+
+    // Deferred into a callback rather than run in the effect body: the attach sets row state
+    // when it finishes, and calling that from the body is what the cascading-render rule
+    // exists to prevent.
+    const timer = setTimeout(() => {
+      for (const { row, result } of pending) {
+        attached.current.add(row.key);
+        void (async () => {
+          const fileId = await uploads.current.get(row.key);
+          if (!fileId || result?.status !== "created") return;
+
+          const response = await fetch(`/api/applications/${result.applicationId}/resume`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId }),
+          }).catch(() => null);
+
+          if (!response?.ok) {
+            update(row.key, {
+              resumeError: "Submitted, but the resume didn't attach. Add it from My submissions.",
+            });
+          }
+        })();
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [state.results, submittedRows]);
+
 
   const anyUploading = rows.some((r) => r.uploading);
   const overLimit = remaining !== null && rows.length > remaining;
@@ -206,7 +288,11 @@ export function SubmitCandidatesForm({
     <div className="space-y-4">
       {state.summary ? <ResultPanel state={state} /> : null}
 
-      <form action={formAction} className="space-y-4">
+      <form
+        action={formAction}
+        onSubmit={() => setSubmittedRows(rows)}
+        className="space-y-4"
+      >
         <input type="hidden" name="payload" value={payload} />
 
         {state.error ? <Alert tone="error">{state.error}</Alert> : null}
@@ -395,9 +481,11 @@ export function SubmitCandidatesForm({
           >
             Add another candidate
           </Button>
-          <SubmitButton count={rows.length} blocked={anyUploading || overLimit} />
+          <SubmitButton count={rows.length} blocked={overLimit} />
           {anyUploading ? (
-            <span className="text-sm text-ink-500">Waiting for uploads to finish…</span>
+            <span className="text-sm text-ink-500">
+              Resumes still uploading — you can submit now, they&apos;ll attach themselves.
+            </span>
           ) : null}
           {remaining !== null ? (
             <Badge>{remaining} submission{remaining === 1 ? "" : "s"} left</Badge>

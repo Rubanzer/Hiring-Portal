@@ -162,6 +162,11 @@ model JobRole {
   /// Internal budget ceiling in whole currency units. Never serialised to the agency side.
   maxBudgetCtc        Int?
   status              JobRoleStatus @default(DRAFT)
+  /// When false (the default) every agency sees this role once it is OPEN. Turn it on to limit
+  /// the role to agencies with an explicit assignment — for a confidential search, or one you
+  /// only want a single partner working. Assignments still carry per-agency submission caps
+  /// either way; this only decides whether they also gate visibility.
+  restrictedToAssignedAgencies Boolean @default(false)
   createdByUserId     String?       @db.Uuid
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
