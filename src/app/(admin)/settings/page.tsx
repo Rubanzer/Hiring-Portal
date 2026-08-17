@@ -1,6 +1,12 @@
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
-import { isCareersApiConfigured, isEmailConfigured, isStorageConfigured } from "@/lib/env";
+import {
+  appUrl,
+  appUrlIsMisconfigured,
+  isCareersApiConfigured,
+  isEmailConfigured,
+  isStorageConfigured,
+} from "@/lib/env";
 import { StageEditor, type EditableStage } from "@/components/stage-editor";
 import {
   Badge,
@@ -82,6 +88,29 @@ export default async function SettingsPage() {
           title="Integrations"
           description="Set these as environment variables on the deployment."
         />
+
+        {/*
+          Shown because a wrong APP_URL is otherwise invisible: the portal keeps working
+          perfectly and only the links inside invitations are broken, so you find out days
+          later when an agency says their link goes nowhere.
+        */}
+        <div className="border-b border-ink-100 px-5 py-3">
+          <p className="text-sm font-medium text-ink-900">Invite and email links point to</p>
+          <p className="mt-0.5 font-mono text-xs text-ink-700">{appUrl()}</p>
+          {appUrlIsMisconfigured() ? (
+            <p className="mt-1 text-xs text-amber-700">
+              APP_URL is set to something that isn&apos;t a usable web address — it needs the
+              <code className="mx-1 font-mono">https://</code>prefix. Falling back to the
+              address above.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-ink-500">
+              If that isn&apos;t your real address, set APP_URL. Links already sent keep the old
+              one — reissue those with Resend invite.
+            </p>
+          )}
+        </div>
+
         <ul className="divide-y divide-ink-100">
           {integrations.map((integration) => (
             <li key={integration.name} className="flex items-start justify-between gap-4 px-5 py-3">

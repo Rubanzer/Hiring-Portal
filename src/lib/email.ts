@@ -1,7 +1,7 @@
 import "server-only";
 import { Resend } from "resend";
 import { prisma } from "./db";
-import { env, isEmailConfigured } from "./env";
+import { appUrl, env, isEmailConfigured } from "./env";
 
 /**
  * Transactional email.
@@ -113,7 +113,7 @@ export async function sendInviteEmail(params: {
   token: string;
   agencyName?: string | null;
 }) {
-  const url = `${env().APP_URL}/set-password?token=${params.token}`;
+  const url = `${appUrl()}/set-password?token=${params.token}`;
   const context = params.agencyName
     ? `You've been given access to the hiring portal for <strong>${escapeHtml(params.agencyName)}</strong>. From there you can submit candidates for the roles assigned to your agency and follow their progress.`
     : `You've been given access to the hiring portal.`;
@@ -137,7 +137,7 @@ export async function sendPasswordResetEmail(params: {
   name: string;
   token: string;
 }) {
-  const url = `${env().APP_URL}/set-password?token=${params.token}`;
+  const url = `${appUrl()}/set-password?token=${params.token}`;
   return sendEmail({
     to: params.to,
     template: "password_reset",
@@ -172,7 +172,7 @@ export async function sendStageChangedEmail(params: {
            ? `<div style="margin:20px 0;padding:14px 16px;background:#f1f5f9;border-radius:8px;line-height:1.6">${escapeHtml(params.feedback)}</div>`
            : ""
        }
-       ${button(`${env().APP_URL}/agency/submissions`, "View your submissions")}`,
+       ${button(`${appUrl()}/agency/submissions`, "View your submissions")}`,
     ),
   });
 }

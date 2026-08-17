@@ -3,6 +3,7 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import { Alert, Button } from "@/components/ui";
+import { CopyLink } from "@/components/copy-link";
 
 export type FormState = {
   error?: string;
@@ -55,11 +56,7 @@ export function ActionForm({
       {state.success ? (
         <Alert tone="success">
           {state.success}
-          {state.inviteUrl ? (
-            <p className="mt-2 break-all rounded bg-white/60 px-2 py-1 font-mono text-xs">
-              {state.inviteUrl}
-            </p>
-          ) : null}
+          {state.inviteUrl ? <CopyLink url={state.inviteUrl} className="mt-2" /> : null}
         </Alert>
       ) : null}
       {children}

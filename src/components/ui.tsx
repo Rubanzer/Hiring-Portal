@@ -321,3 +321,101 @@ export function formatDateTime(value: Date | string | null | undefined): string 
     minute: "2-digit",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Loading skeletons
+//
+// Every page here is server-rendered per request. Without a loading boundary the browser sits
+// on the *previous* page for the whole round trip — no spinner, no dimming, nothing — so a
+// click reads as ignored rather than in progress. These are what the route-level `loading.tsx`
+// files render, and their only real job is to appear in the same frame as the click.
+//
+// They mirror the layout they stand in for, so content landing doesn't shift the page.
+// ---------------------------------------------------------------------------
+
+/** One grey block. `w` and `h` are Tailwind classes so callers control the shape. */
+export function Skeleton({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn("animate-pulse rounded bg-ink-200/70", className)}
+      // Decorative — a screen reader should hear the real content when it arrives, not this.
+      aria-hidden="true"
+    />
+  );
+}
+
+export function PageHeaderSkeleton({ withAction = true }: { withAction?: boolean }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="space-y-2">
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="h-4 w-72" />
+      </div>
+      {withAction ? <Skeleton className="h-9 w-32" /> : null}
+    </div>
+  );
+}
+
+/** Stands in for a Card wrapping a table. */
+export function TableSkeleton({ rows = 6, columns = 5 }: { rows?: number; columns?: number }) {
+  return (
+    <Card>
+      <div className="border-b border-ink-200 bg-ink-50 px-5 py-3">
+        <Skeleton className="h-3 w-32" />
+      </div>
+      <div className="divide-y divide-ink-100">
+        {Array.from({ length: rows }, (_, row) => (
+          <div key={row} className="flex items-center gap-4 px-5 py-3.5">
+            <Skeleton className="h-4 flex-1" />
+            {Array.from({ length: columns - 1 }, (_, col) => (
+              <Skeleton key={col} className="h-4 w-16 shrink-0" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+export function CardSkeleton({ lines = 4 }: { lines?: number }) {
+  return (
+    <Card className="space-y-3 p-5">
+      <Skeleton className="h-4 w-40" />
+      {Array.from({ length: lines }, (_, i) => (
+        <Skeleton key={i} className={cn("h-3", i === lines - 1 ? "w-2/3" : "w-full")} />
+      ))}
+    </Card>
+  );
+}
+
+/** The default page shape: header plus a table. Covers most routes in the portal. */
+export function PageSkeleton({ rows = 6, columns = 5 }: { rows?: number; columns?: number }) {
+  return (
+    <div className="space-y-5">
+      <PageHeaderSkeleton />
+      <TableSkeleton rows={rows} columns={columns} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Clickable table rows
+//
+// A list row where only the name is clickable makes people aim. These three classes turn the
+// whole row into the target while keeping exactly one real anchor in the markup — so
+// middle-click, ⌘-click, "open in new tab", Tab focus and Enter all keep working, which a
+// row-level onClick handler would quietly break.
+//
+// The anchor's ::after is stretched over the row; the row is the positioned ancestor it
+// stretches to. Anything else in the row that must stay clickable needs `aboveRowLink`, or the
+// overlay swallows it.
+// ---------------------------------------------------------------------------
+
+/** On the `<tr>`. Makes it the containing block for the stretched anchor. */
+export const rowLink = "relative hover:bg-ink-50";
+
+/** On the row's primary `<Link>`. Expands its hit area to the whole row. */
+export const rowLinkTarget = "after:absolute after:inset-0 after:content-['']";
+
+/** On any other control in the row — it would otherwise sit under the overlay. */
+export const aboveRowLink = "relative z-10";

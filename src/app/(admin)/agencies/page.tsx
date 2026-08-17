@@ -2,13 +2,16 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { requireInternal } from "@/lib/auth";
 import {
+  cn,
+  formatDate,
+  rowLink,
+  rowLinkTarget,
   Badge,
   Card,
   CardHeader,
   EmptyState,
   PageHeader,
   ScrollArea,
-  formatDate,
 } from "@/components/ui";
 import { CreateAgencyForm } from "./create-agency-form";
 
@@ -64,11 +67,11 @@ export default async function AgenciesPage() {
                 </thead>
                 <tbody className="divide-y divide-ink-100">
                   {agencies.map((agency) => (
-                    <tr key={agency.id} className="hover:bg-ink-50">
+                    <tr key={agency.id} className={rowLink}>
                       <td className="px-5 py-3">
                         <Link
                           href={`/agencies/${agency.id}`}
-                          className="font-medium text-ink-900 hover:underline"
+                          className={cn("font-medium text-ink-900 hover:underline", rowLinkTarget)}
                         >
                           {agency.name}
                         </Link>

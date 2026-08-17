@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "./db";
 import { generateToken, hashToken } from "./auth";
 import { sendInviteEmail, sendPasswordResetEmail } from "./email";
-import { env } from "./env";
+import { appUrl } from "./env";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS = 2 * 60 * 60 * 1000;
@@ -37,7 +37,7 @@ export async function issueInvite(params: {
     },
   });
 
-  return { token, url: `${env().APP_URL}/set-password?token=${token}` };
+  return { token, url: `${appUrl()}/set-password?token=${token}` };
 }
 
 /** Creates the link and emails it. Returns the link so the UI can offer a copyable fallback. */

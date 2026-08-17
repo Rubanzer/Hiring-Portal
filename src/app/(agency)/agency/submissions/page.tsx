@@ -6,7 +6,13 @@ import {
   listAgencyRoles,
 } from "@/lib/tenancy";
 import {
+  aboveRowLink,
+  cn,
+  formatDate,
+  rowLink,
+  rowLinkTarget,
   Badge,
+  Button,
   Card,
   CardHeader,
   EmptyState,
@@ -14,8 +20,6 @@ import {
   PageHeader,
   ScrollArea,
   Select,
-  Button,
-  formatDate,
 } from "@/components/ui";
 
 export const metadata = { title: "My submissions — Hiring Portal" };
@@ -95,11 +99,11 @@ export default async function AgencySubmissionsPage({
                 {applications.map((application) => {
                   const shown = agencyVisibleStage(application.currentStage);
                   return (
-                    <tr key={application.id} className="hover:bg-ink-50">
+                    <tr key={application.id} className={rowLink}>
                       <td className="px-5 py-3">
                         <Link
                           href={`/agency/submissions/${application.id}`}
-                          className="font-medium text-ink-900 hover:underline"
+                          className={cn("font-medium text-ink-900 hover:underline", rowLinkTarget)}
                         >
                           {application.candidate.fullName}
                         </Link>
@@ -122,7 +126,7 @@ export default async function AgencySubmissionsPage({
                             href={`/api/files/${application.resumeFile.id}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-ink-700 underline"
+                            className={cn("text-ink-700 underline", aboveRowLink)}
                           >
                             Open
                           </a>

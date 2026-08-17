@@ -193,14 +193,14 @@ Framework detection and build settings need no changes.
 
 Ten variables, all set in **Project → Settings → Environment Variables**.
 
-**The app returns an error on every request without these four:**
+**The app returns an error on every request without these three:**
 
 | Variable | Notes |
 |---|---|
 | `DATABASE_URL` | Pooled connection string |
 | `DIRECT_DATABASE_URL` | Direct connection string — used only by migrations |
 | `SESSION_SECRET` | 32+ random characters: `openssl rand -base64 48`. Changing it signs everyone out |
-| `APP_URL` | Your real domain, **including `https://`**. Invite links point here |
+| `APP_URL` | Your real domain, **including `https://`**. Optional on Vercel — falls back to your production domain automatically |
 
 **Resumes need these three** — see [Resumes in Google Drive](#resumes-in-google-drive):
 

@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db";
 import { requireInternal } from "@/lib/auth";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import {
+  cn,
+  rowLink,
+  rowLinkTarget,
   Badge,
   Card,
   CardHeader,
@@ -71,11 +74,11 @@ export default async function RolesPage() {
                 </thead>
                 <tbody className="divide-y divide-ink-100">
                   {roles.map((role) => (
-                    <tr key={role.id} className="hover:bg-ink-50">
+                    <tr key={role.id} className={rowLink}>
                       <td className="px-5 py-3">
                         <Link
                           href={`/roles/${role.id}`}
-                          className="font-medium text-ink-900 hover:underline"
+                          className={cn("font-medium text-ink-900 hover:underline", rowLinkTarget)}
                         >
                           {role.title}
                         </Link>
