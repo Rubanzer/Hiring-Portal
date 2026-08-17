@@ -5,6 +5,7 @@ import { requireInternal } from "@/lib/auth";
 import { daysInStage, listStages } from "@/lib/funnel";
 import { formatAnswer, describeKnockout } from "@/lib/screening";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { ResumeViewer } from "@/components/resume-viewer";
 import {
   Alert,
   Badge,
@@ -126,23 +127,20 @@ export default async function CandidateDetailPage({
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
         <div className="space-y-6">
           <Card>
-            <CardHeader
-              title="Candidate"
-              action={
-                application.resumeFile ? (
-                  <a
-                    href={`/api/files/${application.resumeFile.id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm font-medium underline"
-                  >
-                    Open resume
-                  </a>
-                ) : (
-                  <span className="text-sm text-ink-400">No resume</span>
-                )
-              }
-            />
+            <CardHeader title="Resume" description="Read it here rather than in Drive." />
+            <div className="p-5 pt-4">
+              <ResumeViewer
+                fileId={
+                  application.resumeFile?.uploadedAt ? application.resumeFile.id : null
+                }
+                fileName={application.resumeFile?.originalName ?? null}
+                height="60vh"
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Candidate" />
             <dl className="grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-3">
               <Detail label="Email" value={application.candidate.email} />
               <Detail label="Phone" value={application.candidate.phoneE164} />

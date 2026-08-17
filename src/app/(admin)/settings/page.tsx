@@ -43,10 +43,11 @@ export default async function SettingsPage() {
 
   const integrations = [
     {
-      name: "Resume storage",
+      name: "Resume storage (Google Drive)",
       ready: isStorageConfigured(),
-      hint: "S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY",
-      effect: "Agencies can't attach resumes until this is set.",
+      hint: "GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY, GOOGLE_DRIVE_FOLDER_ID",
+      effect:
+        "Agencies can't attach resumes and nothing can be previewed in the portal until this is set.",
     },
     {
       name: "Email",
@@ -57,7 +58,7 @@ export default async function SettingsPage() {
     {
       name: "Google Sheets",
       ready: isSheetsConfigured(),
-      hint: "GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY",
+      hint: "GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY (shared with Drive)",
       effect: "Website leads won't be imported.",
     },
   ];

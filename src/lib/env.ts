@@ -14,24 +14,18 @@ const schema = z.object({
     .min(32, "SESSION_SECRET must be at least 32 characters"),
   APP_URL: z.string().url().default("http://localhost:3000"),
 
-  // Resume storage (S3-compatible: Cloudflare R2, Supabase Storage, MinIO, AWS S3)
-  S3_ENDPOINT: z.string().optional(),
-  S3_REGION: z.string().default("auto"),
-  S3_BUCKET: z.string().optional(),
-  S3_ACCESS_KEY_ID: z.string().optional(),
-  S3_SECRET_ACCESS_KEY: z.string().optional(),
-  S3_FORCE_PATH_STYLE: z
-    .string()
-    .optional()
-    .transform((v) => v === "true"),
-
   // Transactional email
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().default("Hiring Portal <onboarding@resend.dev>"),
 
-  // Google Sheets ingestion (service account with read-only scope)
+  // Google service account — powers both Sheets ingestion and Drive resume storage.
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
   GOOGLE_PRIVATE_KEY: z.string().optional(),
+
+  /// Folder inside a Shared Drive where resumes are written. A Shared Drive specifically:
+  /// a service account has no storage quota of its own, so writing into someone's My Drive
+  /// fails with 403 storageQuotaExceeded.
+  GOOGLE_DRIVE_FOLDER_ID: z.string().optional(),
 
   // Shared secrets for machine-to-machine routes
   SHEETS_WEBHOOK_SECRET: z.string().optional(),
@@ -60,11 +54,15 @@ export function env() {
   return cached;
 }
 
-export function isStorageConfigured() {
+/** Service account credentials are present — the prerequisite for both Sheets and Drive. */
+export function isGoogleConfigured() {
   const e = env();
-  return Boolean(
-    e.S3_BUCKET && e.S3_ACCESS_KEY_ID && e.S3_SECRET_ACCESS_KEY && e.S3_ENDPOINT,
-  );
+  return Boolean(e.GOOGLE_SERVICE_ACCOUNT_EMAIL && e.GOOGLE_PRIVATE_KEY);
+}
+
+/** Resume storage needs the credentials plus somewhere to put the files. */
+export function isStorageConfigured() {
+  return isGoogleConfigured() && Boolean(env().GOOGLE_DRIVE_FOLDER_ID);
 }
 
 export function isEmailConfigured() {
@@ -72,6 +70,5 @@ export function isEmailConfigured() {
 }
 
 export function isSheetsConfigured() {
-  const e = env();
-  return Boolean(e.GOOGLE_SERVICE_ACCOUNT_EMAIL && e.GOOGLE_PRIVATE_KEY);
+  return isGoogleConfigured();
 }

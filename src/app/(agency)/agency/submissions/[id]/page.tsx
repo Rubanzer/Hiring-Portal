@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { requireAgencyUser } from "@/lib/auth";
 import { agencyVisibleStage, getAgencyApplication } from "@/lib/tenancy";
 import { formatAnswer } from "@/lib/screening";
+import { ResumeViewer } from "@/components/resume-viewer";
 import {
   Badge,
   Card,
@@ -42,6 +43,17 @@ export default async function AgencySubmissionDetailPage({
 
       <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
         <div className="space-y-6">
+          <Card>
+            <CardHeader title="Resume" />
+            <div className="p-5 pt-4">
+              <ResumeViewer
+                fileId={application.resumeFile?.uploadedAt ? application.resumeFile.id : null}
+                fileName={application.resumeFile?.originalName ?? null}
+                height="55vh"
+              />
+            </div>
+          </Card>
+
           <Card>
             <CardHeader title="Candidate details" />
             <dl className="grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-2">

@@ -524,17 +524,42 @@ model ActivityLog {
 // Files
 // ---------------------------------------------------------------------------
 
-/// Resume metadata. Bytes live in S3-compatible storage and are only ever reachable through
-/// /api/files/[id], which authorises the request and then redirects to a short-lived signed URL.
+/// Tracks the PDF rendering of a file a browser can't display inline.
+///
+/// PDFs never leave NOT_STARTED — the preview resolver short-circuits on mime type before
+/// consulting this, so for them the column is simply unused.
+enum PreviewStatus {
+  NOT_STARTED // no conversion attempted yet
+  PENDING // conversion in flight — doubles as a lock against converting twice
+  READY
+  FAILED
+}
+
+/// Resume metadata. The bytes live in a Google Drive Shared Drive folder and are only ever
+/// reachable through /api/files/[id], which authorises the request and streams from Drive.
+/// Files are never made link-shareable, so a leaked URL can't expose candidate data.
 model StoredFile {
-  id               String   @id @default(uuid()) @db.Uuid
-  storageKey       String   @unique
+  id     String @id @default(uuid()) @db.Uuid
+  /// Drive file id. Always derived from Drive's API response, never from client input —
+  /// otherwise an agency could point a record at somebody else's resume.
+  driveFileId String @unique
+
   originalName     String
   mimeType         String
   sizeBytes        Int
   uploadedByUserId String?  @db.Uuid
   checksumSha256   String?
   createdAt        DateTime @default(now())
+
+  /// Set only once Drive confirms the bytes actually landed. A record without this is an
+  /// abandoned upload and must not be attached to a submission.
+  uploadedAt DateTime?
+
+  /// Drive id of a PDF rendering, for formats browsers can't display (DOC/DOCX). Converted
+  /// once on first preview and cached here, so only the first open pays the cost.
+  previewFileId String?
+  previewStatus PreviewStatus @default(NOT_STARTED)
+  previewError  String?
 
   uploadedBy   User?         @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
   applications Application[]

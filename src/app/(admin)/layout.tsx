@@ -2,6 +2,7 @@ import { requireInternal } from "@/lib/auth";
 import { PortalShell, type NavItem } from "@/components/portal-shell";
 
 const BASE_NAV: NavItem[] = [
+  { href: "/review", label: "Review" },
   { href: "/funnel", label: "Funnel" },
   { href: "/candidates", label: "Candidates" },
   { href: "/roles", label: "Roles" },

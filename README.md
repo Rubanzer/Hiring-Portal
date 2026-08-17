@@ -17,6 +17,7 @@ control.
 - [Getting started](#getting-started)
 - [Deploying](#deploying)
 - [Connecting your Google Sheet](#connecting-your-google-sheet)
+- [Resumes in Google Drive](#resumes-in-google-drive)
 - [Day-to-day use](#day-to-day-use)
 - [Testing](#testing)
 - [Project layout](#project-layout)
@@ -203,9 +204,10 @@ Framework detection and build settings need no changes.
 | `CRON_SECRET` | `openssl rand -hex 32`. Without it the sync endpoint rejects Vercel's cron |
 | `SHEETS_WEBHOOK_SECRET` | `openssl rand -hex 32`. Needed for the Apps Script push |
 
-**Optional — each switches on a feature, and the UI says so when one is missing:**
-`S3_*` (resume uploads), `RESEND_API_KEY` (invite and notification emails),
-`GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` (importing website leads).
+**Optional — each switches on a feature, and Settings → Integrations says so when one is
+missing:** `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` (one service account, used for
+both Drive and Sheets), `GOOGLE_DRIVE_FOLDER_ID` (resume storage and in-portal preview),
+`RESEND_API_KEY` (invite and notification emails).
 
 ### 4. Deploy
 
@@ -227,11 +229,10 @@ npm run db:seed
 Then sign in at your domain. `vercel.json` already registers the 10-minute Sheets sync;
 schedules more frequent than daily need a Vercel Pro account.
 
-**Resume storage** is any S3-compatible bucket. Keep it **private** — the app hands out
-60-second signed URLs through `/api/files/[id]`, which authorises every request. Add a CORS rule
-allowing `PUT` from your domain so browser uploads work.
+**Resume storage** is Google Drive — see [Resumes in Google Drive](#resumes-in-google-drive).
 
-Running cost at typical volume: roughly $0–25/month.
+Running cost at typical volume: roughly $0–25/month, since Drive comes with your Workspace
+seat rather than being billed separately.
 
 ### Troubleshooting
 
@@ -242,6 +243,9 @@ Running cost at typical volume: roughly $0–25/month.
 | `Invalid environment configuration` on first request | A required variable is missing. The message names it |
 | `Hobby accounts are limited to daily cron jobs` | Either move to Pro or set `vercel.json` to a daily schedule |
 | Connection limit errors under load | `DATABASE_URL` is the direct string; switch it to the pooled one |
+| `403 storageQuotaExceeded` on upload | `GOOGLE_DRIVE_FOLDER_ID` points into someone's My Drive. It has to be a folder in a **Shared Drive** |
+| "The resume folder isn't reachable" | The service account isn't a member of that Shared Drive, or the folder id is wrong |
+| Resumes over ~4.5 MB fail to download | A read path is buffering instead of streaming. `npm test` covers this |
 
 ## Connecting your Google Sheet
 
@@ -263,13 +267,86 @@ The webhook payload only names *which* sheet changed — the portal then reads i
 credentials. A leaked webhook secret can trigger an import but can never inject a fabricated
 candidate.
 
+## Resumes in Google Drive
+
+Drive is the storage backend, not one option behind a switch. Every resume lives in one folder
+you own, and every resume is readable **inside the portal** — you should never have to open
+Drive to decide on a candidate.
+
+### Setup, once
+
+1. In Google Cloud, same project as Sheets: enable the **Google Drive API**. The service account
+   and key you already created for Sheets are reused; there is no second credential.
+2. In Drive, create a **Shared Drive** (e.g. "Hiring") and a folder inside it, "Resumes".
+3. Add the service account email as a **Content manager** of that Shared Drive.
+4. Copy the folder id out of its URL — `drive.google.com/drive/folders/<THIS PART>` — and set
+   `GOOGLE_DRIVE_FOLDER_ID`.
+
+**It must be a Shared Drive, not My Drive.** A service account has no storage quota of its own,
+so writing into a personal folder fails with `403 storageQuotaExceeded`. In a Shared Drive the
+files are owned by your organisation, which is also what you want for continuity — nothing is
+tied to one person's account.
+
+Anyone with access to that Shared Drive can read every resume in it. Keep membership to people
+who should see candidate personal data.
+
+### The size limit is 25 MB, and how that works
+
+Scanned CVs routinely pass 10 MB. Vercel caps a function's request **and** response bodies at
+4.5 MB and that cannot be raised, so neither direction is allowed to pass through the function:
+
+- **Upload** — the server asks Drive for a resumable session URI and hands it to the browser,
+  which `PUT`s the bytes straight to Google. Nothing traverses the function, so the request cap
+  never applies. The browser then calls `/api/uploads/complete`, and the server asks Drive for
+  the real byte count before the file counts as attached — an abandoned upload can't quietly
+  become an application with an empty resume.
+- **Download and preview** — `/api/files/[id]` and `/api/files/[id]/preview` **stream** from
+  Drive. Streamed responses are exempt from the 4.5 MB response cap.
+
+That second point is load-bearing and fails quietly: buffering a file instead of streaming it
+keeps working for small test fixtures and breaks only for the large CVs this design exists to
+support. `tests/storage.test.ts` asserts the read path returns a `ReadableStream` directly,
+rather than inferring it from a download that happened to succeed.
+
+The Drive file id is always taken from Drive's own API response, never from the browser. If the
+client could name the id, an agency could attach its submission to another agency's resume.
+
+### Word documents
+
+Browsers render PDFs in a frame; DOC and DOCX they don't. Rather than fall back to "download it
+instead" — which is the exact trip to Drive this is meant to remove — the portal has Drive
+convert the file: copy to Google Docs format, export as PDF. That happens **once, lazily, on
+first preview**, and the converted PDF is stored back in Drive with its id cached on the file
+record. So the first open of a Word CV shows "Preparing preview…" for a few seconds and every
+open after is instant. Two people opening the same new CV at once produce one conversion, not
+two — the status column doubles as the lock.
+
+### Access
+
+Files are never made link-shareable in Drive. Every read goes through the app, which checks the
+session: internal users see everything, an agency reaches only files attached to its own
+applications, and an id you're not entitled to returns **404 rather than 403**, so the id space
+can't be probed. Responses carry `Cache-Control: private, no-store`.
+
 ## Day-to-day use
+
+**Review** (`/review`) is the triage screen: the resume rendered large on the left, the candidate
+summary, qualifying answers and screening flags on the right, and **Shortlist** / **Reject** /
+**Skip** with an optional note. Deciding advances to the next candidate automatically, and `S`,
+`R` and `→` do the same from the keyboard, so twenty candidates is a couple of minutes rather
+than twenty page loads. The queue is everyone sitting in the entry stage, oldest first,
+filterable by role and agency.
+
+Its two targets are derived from the funnel rather than hardcoded: *shortlist* is the next
+**Active** stage after the entry stage, *reject* is the first **Lost** stage. Rename or reorder
+your stages in Settings and this screen follows, because nothing depends on a stage being called
+"Shortlisted".
 
 **Funnel** has a board view (drag cards between stages) and a table view (filter by role,
 agency, source, notice period, screening flags; select many and move them in one action).
 Cards show days-in-stage and turn amber past two weeks.
 
-**Candidate detail** holds the resume, every qualifying answer with flags highlighted, the
+**Candidate detail** holds the resume rendered inline, every qualifying answer with flags highlighted, the
 full stage history, interview scheduling for all four rounds with outcomes and feedback, notes,
 and the other roles the same person has applied for. Scheduling an interview moves the
 candidate to *Interview scheduled* automatically.
@@ -283,7 +360,7 @@ rather than raw volume, source comparison, and everyone stuck for more than 14 d
 ## Testing
 
 ```bash
-npm test         # unit tests: normalisation, dedupe, screening rules, sheet mapping
+npm test         # unit tests: normalisation, dedupe, screening rules, sheet mapping, storage
 npm run verify   # end-to-end against a real database (39 checks)
 npm run lint
 npm run typecheck
@@ -308,11 +385,12 @@ prisma/
 
 src/
   app/
-    (admin)/               your side — funnel, candidates, roles, agencies, users, settings, reports
+    (admin)/               your side — review, funnel, candidates, roles, agencies, users,
+                           settings, reports
     (agency)/              agency side — dashboard, submit, submissions
     api/
-      uploads/             signed resume upload URLs
-      files/[id]/          authorised resume download
+      uploads/             Drive resumable upload sessions, and the completion check
+      files/[id]/          authorised resume download, and the streamed preview
       webhooks/sheets/     Apps Script push
       cron/sheets-sync/    scheduled safety-net pull
     login/, set-password/  authentication
@@ -328,10 +406,14 @@ src/
     normalize.ts           email, phone, currency, notice period, experience
     auth.ts                sessions and role guards
     password.ts            scrypt hashing
-    storage.ts             S3 signed URLs
+    storage.ts             Google Drive: uploads, streaming reads, Word→PDF preview
+    google-auth.ts         one service-account JWT, shared by Drive and Sheets
+    file-access.ts         who may read a file, and the headers every file response carries
+    review.ts              the triage queue and its stage targets
     email.ts               transactional email, every send logged
 
-  components/              shared UI, question builder, funnel board, submission form
+  components/              shared UI, question builder, funnel board, submission form,
+                           resume viewer, review queue
 
 scripts/
   demo.ts                  realistic sample data

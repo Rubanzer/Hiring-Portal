@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { google } from "googleapis";
 import { prisma } from "./db";
 import { env, isSheetsConfigured } from "./env";
+import { googleJwt, SCOPES } from "./google-auth";
 import { createSubmission } from "./submissions";
 import { parseExperienceMonths } from "./normalize";
 import { hashRow, mapRow, type ColumnMapping } from "./sheet-mapping";
@@ -40,15 +41,11 @@ export class SheetsNotConfiguredError extends Error {
 
 function sheetsClient() {
   if (!isSheetsConfigured()) throw new SheetsNotConfiguredError();
-
-  const auth = new google.auth.JWT({
-    email: env().GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    // Private keys pasted into env vars arrive with literal \n sequences.
-    key: env().GOOGLE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+  // Credential handling lives in lib/google-auth, shared with Drive.
+  return google.sheets({
+    version: "v4",
+    auth: googleJwt(SCOPES.sheetsReadonly, "Google Sheets import"),
   });
-
-  return google.sheets({ version: "v4", auth });
 }
 
 /** Reads a range verbatim. Used by the mapping UI's preview and by the importer. */

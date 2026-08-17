@@ -146,12 +146,26 @@ export function SubmitCandidatesForm({
         throw new Error(data.error ?? "Upload failed.");
       }
 
+      // Straight to Google. The bytes never touch our server, which is what allows a 25 MB
+      // limit despite the platform's 4.5 MB cap on function request bodies.
       const put = await fetch(data.uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": file.type },
         body: file,
       });
       if (!put.ok) throw new Error("The file couldn't be uploaded. Try again.");
+
+      // Ask the server to verify with Drive that the bytes actually landed. Without this an
+      // interrupted upload would still look attached, and you'd find out when you opened it.
+      const confirmed = await fetch("/api/uploads/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: data.fileId }),
+      });
+      if (!confirmed.ok) {
+        const problem = (await confirmed.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(problem?.error ?? "The upload couldn't be verified. Try again.");
+      }
 
       update(key, { resumeFileId: data.fileId, uploading: false });
     } catch (error) {
@@ -199,7 +213,7 @@ export function SubmitCandidatesForm({
 
         {!storageConfigured ? (
           <Alert tone="warning" title="Resume upload is unavailable">
-            File storage isn&apos;t configured on this deployment yet, so resumes can&apos;t be
+            Google Drive isn&apos;t connected on this deployment yet, so resumes can&apos;t be
             attached. You can still submit candidate details — mention where the resume is in
             the notes field.
           </Alert>
@@ -309,7 +323,9 @@ export function SubmitCandidatesForm({
               <Field
                 label="Resume"
                 hint={
-                  storageConfigured ? "PDF, DOC or DOCX, up to 10 MB." : "Unavailable right now."
+                  storageConfigured
+                    ? "PDF, DOC or DOCX, up to 25 MB."
+                    : "Unavailable right now."
                 }
                 error={row.resumeError}
               >
